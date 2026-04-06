@@ -13,7 +13,6 @@ mir_core/
   datasets/      — dataset loader adapters and metadata interfaces
   export/        — checkpoint loading and export helpers
 mir_env/
-  setup_madmom.py        — post-install helper for madmom + BeatNet
   verify_installation.py — environment sanity check
 ```
  

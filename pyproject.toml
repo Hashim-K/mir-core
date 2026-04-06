@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mir-core"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Shared Python package for MSc thesis MIR project"
+
+[tool.setuptools.packages.find]
+include = ["mir_core*", "mir_env*"]
