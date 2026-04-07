@@ -1,10 +1,9 @@
 """
-Data loading and dataset handling utilities for beat tracking.
+Data loading and dataset handling for beat tracking and genre classification.
 
 Datasets:
-    BeatDataset    — PyTorch Dataset for BockTCN (81-dim madmom mel-spectrogram, 100 FPS).
-    BeatNetDataset — PyTorch Dataset for BeatNet (272-dim LOG_SPECT, 50 FPS, 3-class targets).
-    GenreDataset   — PyTorch Dataset for genre classification from audio segments.
+    BeatTrackingDataset — Loads audio + beat/downbeat annotations (no feature extraction).
+    GenreDataset        — Loads audio segments + genre labels with mel/mfcc features.
 
 Loaders (via mirdata or custom loaders):
     load_dataset_tracks       — GTZAN, BRID, Candombe, and other mirdata datasets.
@@ -20,8 +19,16 @@ Splitting:
     CrossValidationRunner            — Orchestrates fold creation and result aggregation.
 """
 
-from .beat_dataset import BeatDataset
-from .beatnet_dataset import BeatNetDataset
+from .annotations import (
+    BeatAnnotation,
+    read_beat,
+    write_beat,
+    from_candombe_csv,
+    from_beats_tsv,
+    from_salsa_dataset,
+    from_salsaset_csv,
+)
+from .beat_tracking_dataset import BeatTrackingDataset
 from .genre_dataset import GenreDataset
 from .loaders import (
     load_dataset_tracks,
@@ -41,9 +48,16 @@ from .splits import (
 )
 
 __all__ = [
+    # Annotations
+    "BeatAnnotation",
+    "read_beat",
+    "write_beat",
+    "from_candombe_csv",
+    "from_beats_tsv",
+    "from_salsa_dataset",
+    "from_salsaset_csv",
     # Datasets
-    "BeatDataset",
-    "BeatNetDataset",
+    "BeatTrackingDataset",
     "GenreDataset",
     # Loaders
     "load_dataset_tracks",

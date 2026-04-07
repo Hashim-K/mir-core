@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
 from sklearn.model_selection import train_test_split
 
-from .beat_dataset import BeatDataset
+from .beat_tracking_dataset import BeatTrackingDataset
 
 
 def get_dataset_splits(
@@ -53,9 +53,9 @@ def get_dataset_splits(
 
 
 def create_dataloaders(
-    train_dataset: BeatDataset,
-    val_dataset: BeatDataset,
-    test_dataset: Optional[BeatDataset] = None,
+    train_dataset: BeatTrackingDataset,
+    val_dataset: BeatTrackingDataset,
+    test_dataset: Optional[BeatTrackingDataset] = None,
     batch_size: int = 1,
     num_workers: int = 4,
 ) -> Tuple:
@@ -239,18 +239,14 @@ class CrossValidationRunner:
     def get_fold_datasets(
         self,
         fold: int,
-        widen: bool = True,
         val_size: float = 0.1,
-        **dataset_kwargs,
-    ) -> Tuple[BeatDataset, BeatDataset, BeatDataset]:
+    ) -> Tuple[BeatTrackingDataset, BeatTrackingDataset, BeatTrackingDataset]:
         """
         Get train/val/test datasets for a specific fold.
 
         Args:
             fold: Fold index (0 to n_folds-1)
-            widen: Whether to widen beat targets for training
             val_size: Fraction of training data for validation
-            **dataset_kwargs: Additional arguments for BeatDataset
 
         Returns:
             Tuple of (train_dataset, val_dataset, test_dataset)
@@ -267,15 +263,9 @@ class CrossValidationRunner:
         else:
             val_keys = train_keys[:max(1, len(train_keys) // 10)]
 
-        train_dataset = BeatDataset(
-            self.tracks, train_keys, widen=widen, **dataset_kwargs
-        )
-        val_dataset = BeatDataset(
-            self.tracks, val_keys, widen=widen, **dataset_kwargs
-        )
-        test_dataset = BeatDataset(
-            self.tracks, test_keys, widen=False, **dataset_kwargs
-        )
+        train_dataset = BeatTrackingDataset(self.tracks, train_keys)
+        val_dataset = BeatTrackingDataset(self.tracks, val_keys)
+        test_dataset = BeatTrackingDataset(self.tracks, test_keys)
 
         return train_dataset, val_dataset, test_dataset
 
@@ -293,7 +283,7 @@ class CrossValidationRunner:
             fold: Fold index
             batch_size: Batch size
             num_workers: Number of data loading workers
-            **dataset_kwargs: Additional arguments for BeatDataset
+            **dataset_kwargs: Additional arguments for BeatTrackingDataset
 
         Returns:
             Tuple of (train_loader, val_loader, test_loader)
