@@ -1,0 +1,178 @@
+name: Sync issue to msc-thesis project
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+      - transferred
+      - labeled
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add derived labels
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          script: |
+            const repo = context.repo.repo;
+            const areaMap = {
+              'mir-core': 'core-platform',
+              'mir-environment': 'core-platform',
+              'mir-desktop-app': 'apps',
+              'mir-webapp': 'apps',
+              'mir-train-hpc': 'hpc',
+              'mir-embedded-ai': 'embedded',
+              'mir-embedded-hmi': 'embedded',
+              'mir-data': 'data',
+              'mir-outputs': 'outputs',
+              'msc-thesis': 'thesis',
+              'thesis-docs': 'thesis',
+              'thesis-latex': 'thesis',
+            };
+
+            const existing = (context.payload.issue.labels || []).map(l => l.name);
+            const desired = [];
+            desired.push('tracked:msc-thesis');
+            desired.push('area:' + (areaMap[repo] || 'thesis'));
+            const missing = desired.filter(l => !existing.includes(l));
+            if (missing.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: missing,
+              });
+            }
+
+      - name: Add issue to master project
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/users/Hashim-K/projects/5
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+
+      - name: Set project fields
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          script: |
+            const owner = 'Hashim-K';
+            const projectNumber = 5;
+            const issueUrl = context.payload.issue.html_url;
+            const repo = context.repo.repo;
+            const labels = (context.payload.issue.labels || []).map(l => l.name);
+            const areaMap = {
+              'mir-core': 'Core Platform',
+              'mir-environment': 'Core Platform',
+              'mir-desktop-app': 'Apps',
+              'mir-webapp': 'Apps',
+              'mir-train-hpc': 'HPC',
+              'mir-embedded-ai': 'Embedded',
+              'mir-embedded-hmi': 'Embedded',
+              'mir-data': 'Data',
+              'mir-outputs': 'Outputs',
+              'msc-thesis': 'Thesis',
+              'thesis-docs': 'Thesis',
+              'thesis-latex': 'Thesis',
+            };
+            const phaseMap = {
+              'phase:1-environment': 'Phase 1 - Environment',
+              'phase:1-core': 'Phase 1 - Core',
+              'phase:2-training': 'Phase 2 - Training',
+              'phase:3-desktop': 'Phase 3 - Desktop',
+              'phase:4-onnx': 'Phase 4 - ONNX',
+              'phase:5-webapp': 'Phase 5 - Webapp',
+              'phase:6-embedded': 'Phase 6 - Embedded',
+              'phase:7-writing': 'Phase 7 - Writing',
+            };
+            const phaseLabel = labels.find(l => l.startsWith('phase:'));
+            const desired = {
+              'Status': 'Backlog',
+              'Area': areaMap[repo] || 'Thesis',
+              'Phase': phaseMap[phaseLabel] || 'Unassigned',
+            };
+
+            const projectQuery = await github.graphql(
+              `query($owner:String!, $number:Int!) {
+                user(login:$owner) {
+                  projectV2(number:$number) {
+                    id
+                    fields(first:50) {
+                      nodes {
+                        ... on ProjectV2FieldCommon { id name }
+                        ... on ProjectV2SingleSelectField { id name options { id name } }
+                      }
+                    }
+                  }
+                }
+              }`,
+              { owner, number: projectNumber }
+            );
+
+            const project = projectQuery.user.projectV2;
+            if (!project) core.setFailed('Project not found');
+
+            let itemId = null;
+            let cursor = null;
+            while (!itemId) {
+              const itemQuery = await github.graphql(
+                `query($owner:String!, $number:Int!, $cursor:String) {
+                  user(login:$owner) {
+                    projectV2(number:$number) {
+                      items(first:100, after:$cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          id
+                          content {
+                            ... on Issue { url }
+                            ... on PullRequest { url }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }`,
+                { owner, number: projectNumber, cursor }
+              );
+
+              const page = itemQuery.user.projectV2.items;
+              const hit = page.nodes.find(n => n.content && n.content.url === issueUrl);
+              if (hit) {
+                itemId = hit.id;
+                break;
+              }
+              if (!page.pageInfo.hasNextPage) break;
+              cursor = page.pageInfo.endCursor;
+            }
+
+            if (!itemId) core.setFailed('Project item not found for ' + issueUrl);
+
+            async function setSingleSelect(fieldName, optionName) {
+              const field = project.fields.nodes.find(f => f.name === fieldName);
+              if (!field || !field.options) return;
+              const option = field.options.find(o => o.name === optionName);
+              if (!option) return;
+              await github.graphql(
+                `mutation($project:ID!, $item:ID!, $field:ID!, $option:String!) {
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$project,
+                    itemId:$item,
+                    fieldId:$field,
+                    value:{ singleSelectOptionId:$option }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }`,
+                { project: project.id, item: itemId, field: field.id, option: option.id }
+              );
+            }
+
+            await setSingleSelect('Status', desired['Status']);
+            await setSingleSelect('Area', desired['Area']);
+            await setSingleSelect('Phase', desired['Phase']);
