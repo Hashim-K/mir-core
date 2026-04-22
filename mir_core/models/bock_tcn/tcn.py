@@ -1,13 +1,29 @@
 """
 BockTCN: Temporal Convolutional Network for beat and downbeat tracking.
 
-Based on Bock et al. "Deconstruct, Analyse, Reconstruct:
-How to Improve Tempo, Beat, and Downbeat Estimation" (ISMIR 2020)
+Architecture matches Davies & Böck 2019, "Temporal convolutional networks
+for musical audio beat tracking" (EUSIPCO), Table I:
 
-Architecture:
-1. Stack of 3 Conv2D blocks with max pooling
-2. TCN with 11 dilated residual blocks
-3. Task-specific heads for beats, downbeats, tempo
+  Signal conditioning:
+    - 44.1 kHz audio, 2048-sample Hann window (46.4 ms), 10 ms hop → 100 fps
+    - 81-band log-magnitude filterbank (12 bands/octave, 30–17000 Hz)
+
+  Conv frontend (collapses freq dimension to 1):
+    Layer 1: Conv2d 3×3, 16 filters  → MaxPool (1×3)   [81→26 freq bins]
+    Layer 2: Conv2d 3×3, 16 filters  → MaxPool (1×3)   [26→8  freq bins]
+    Layer 3: Conv2d 1×8, 16 filters  → no pooling      [8→1   freq bin]
+
+  TCN: 1 stack, dilations 2^0…2^10, 16 filters, kernel 5, ELU, dropout 0.1
+
+  Heads: sigmoid beat activation (and optional downbeat activation)
+
+  Training: Adam lr=1e-3, batch=1, binary cross-entropy, ReduceLROnPlateau
+             (factor 0.2, stop if no improvement for 50 epochs)
+
+NOTE — time axis: valid padding on the two 3×3 layers removes 2 frames each,
+so output time = input time − 4. Account for this in target alignment.
+
+Paper: https://doi.org/10.23919/EUSIPCO.2019.8902843
 """
 
 from typing import List, Dict, Tuple
@@ -113,7 +129,7 @@ class TCN(nn.Module):
 
     def __init__(
         self,
-        n_filters: int = 20,
+        n_filters: int = 16,
         kernel_size: int = 5,
         dilations: List[int] = None,
         padding: str = "same",
@@ -127,7 +143,12 @@ class TCN(nn.Module):
         self.tcn_layers = nn.ModuleDict()
         for idx, d in enumerate(dilations):
             self.tcn_layers[f"tcn_{idx}"] = ResBlock(
-                d, n_filters, kernel_size, padding, dropout_rate
+                d,
+                n_filters,
+                kernel_size,
+                padding,
+                dropout_rate,
+                in_channels=n_filters,
             )
 
         self.activation = nn.ELU()
@@ -175,10 +196,10 @@ class BockTCN(nn.Module):
 
     def __init__(
         self,
-        n_filters: int = 20,
+        n_filters: int = 16,
         n_dilations: int = 11,
         kernel_size: int = 5,
-        dropout_rate: float = 0.15,
+        dropout_rate: float = 0.1,
         include_downbeats: bool = False,
         include_tempo: bool = False,
         verbose: bool = False,
@@ -195,15 +216,18 @@ class BockTCN(nn.Module):
         self.mp_1 = nn.MaxPool2d((1, 3))
         self.dropout_1 = nn.Dropout(dropout_rate)
 
-        self.conv_2 = nn.Conv2d(n_filters, n_filters, (1, 10), padding="valid")
+        # Conv 2: 16 filters, 3×3, MaxPool 1×3 (freq only)
+        self.conv_2 = nn.Conv2d(n_filters, n_filters, (3, 3), padding="valid")
         self.elu_2 = nn.ELU()
         self.mp_2 = nn.MaxPool2d((1, 3))
         self.dropout_2 = nn.Dropout(dropout_rate)
 
-        self.conv_3 = nn.Conv2d(n_filters, n_filters, (3, 3), padding="valid")
+        # Conv 3: 16 filters, 1×8, NO pooling — collapses freq to 1
+        # Input freq after conv2+pool: 81→79→26→24→8; after conv3: 8→1
+        self.conv_3 = nn.Conv2d(n_filters, n_filters, (1, 8), padding="valid")
         self.elu_3 = nn.ELU()
-        self.mp_3 = nn.MaxPool2d((1, 3))
         self.dropout_3 = nn.Dropout(dropout_rate)
+        # NOTE: no mp_3 — paper specifies no pooling on third layer
 
         # TCN
         dilations = [2 ** i for i in range(n_dilations)]
@@ -249,7 +273,7 @@ class BockTCN(nn.Module):
         if self.verbose:
             print("block2 out:", x.shape)
 
-        x = self.dropout_3(self.mp_3(self.elu_3(self.conv_3(x))))
+        x = self.dropout_3(self.elu_3(self.conv_3(x)))
         if self.verbose:
             print("block3 out:", x.shape)
 
