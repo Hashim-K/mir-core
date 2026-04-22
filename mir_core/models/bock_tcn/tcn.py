@@ -53,8 +53,8 @@ class ResBlock(nn.Module):
         n_filters: int,
         kernel_size: int = 5,
         padding: str = "same",
-        dropout_rate: float = 0.15,
-        in_channels: int = 20,
+        dropout_rate: float = 0.1,
+        in_channels: int = 16,
     ):
         super().__init__()
 
@@ -133,7 +133,7 @@ class TCN(nn.Module):
         kernel_size: int = 5,
         dilations: List[int] = None,
         padding: str = "same",
-        dropout_rate: float = 0.15,
+        dropout_rate: float = 0.1,
     ):
         super().__init__()
 
@@ -176,11 +176,12 @@ class BockTCN(nn.Module):
     """
     Multi-task TCN for beat, downbeat, and tempo tracking.
 
-    Based on Bock et al. "Deconstruct, Analyse, Reconstruct:
-    How to Improve Tempo, Beat, and Downbeat Estimation" (ISMIR 2020)
+    Based on Davies & Böck "Temporal convolutional networks for musical
+    audio beat tracking" (EUSIPCO 2019), Table I.
 
     Architecture:
-    1. Stack of 3 Conv2D blocks with max pooling
+    1. Conv frontend: 2 Conv2D blocks with MaxPool + 1 Conv2D block WITHOUT pooling
+       (conv3 collapses the frequency dimension to 1 — no pooling on layer 3)
     2. TCN with 11 dilated residual blocks
     3. Task-specific heads for beats, downbeats, tempo
 
