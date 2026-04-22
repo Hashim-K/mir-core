@@ -37,9 +37,9 @@ def test_preset_file_schema():
         assert "citation" in data, f"{f.name} missing 'citation'"
         assert "config" in data, f"{f.name} missing 'config'"
         assert "notes" in data, f"{f.name} missing 'notes'"
-        # filename stem must equal hash
-        assert data.get("hash", f.stem) == f.stem, (
-            f"{f.name}: 'hash' field must match filename stem"
+        # filename stem IS the hash — must be non-empty hex string
+        assert f.stem and all(c in "0123456789abcdef" for c in f.stem), (
+            f"{f.name}: filename stem must be a lowercase hex hash, got '{f.stem}'"
         )
 
 

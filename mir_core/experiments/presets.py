@@ -6,7 +6,8 @@ The filename stem IS the experiment hash — no separate index needed.
 
 Adding a new preset:
   1. Build the config dict (same schema as YAML configs, no env expansion).
-  2. Compute: python -c "from mir_core.experiments import stable_hash; import json; print(stable_hash(json.load(open('tmp.json'))['config']))"
+  2. Compute hash (replace my_preset.json with your file):
+     python -c "from mir_core.experiments import stable_hash; import json; print(stable_hash(json.load(open('my_preset.json'))['config']))"
   3. Save as presets/{hash}.json with key, citation, notes, config fields.
   4. Commit.
 """
@@ -21,7 +22,7 @@ from typing import Any
 PRESETS_DIR: Path = Path(__file__).parent / "presets"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Preset:
     key: str          # human identifier, e.g. "rapini2024_salsaset_beatnet"
     hash: str         # stable_hash(config) — equals the JSON filename stem
@@ -36,14 +37,17 @@ def load_presets() -> dict[str, Preset]:
     if not PRESETS_DIR.is_dir():
         return registry
     for path in sorted(PRESETS_DIR.glob("*.json")):
-        data = json.loads(path.read_text())
-        preset = Preset(
-            key=data["key"],
-            hash=path.stem,          # filename stem IS the hash
-            citation=data["citation"],
-            config=data["config"],
-            notes=data.get("notes", []),
-        )
+        try:
+            data = json.loads(path.read_text())
+            preset = Preset(
+                key=data["key"],
+                hash=path.stem,          # filename stem IS the hash
+                citation=data["citation"],
+                config=data["config"],
+                notes=data.get("notes", []),
+            )
+        except (json.JSONDecodeError, KeyError) as exc:
+            raise ValueError(f"Malformed preset file {path.name}: {exc}") from exc
         registry[preset.hash] = preset
     return registry
 
