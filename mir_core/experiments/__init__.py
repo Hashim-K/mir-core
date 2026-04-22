@@ -31,3 +31,8 @@ def stable_hash(config: Mapping[str, Any], length: int = 16) -> str:
 def experiment_hash(config: Mapping[str, Any], length: int = 16) -> str:
     """Alias for code that wants a domain-specific name."""
     return stable_hash(config, length=length)
+
+
+# Re-export preset registry so callers can do:
+#   from mir_core.experiments import PRESETS, get_by_hash
+from .presets import PRESETS, PRESETS_BY_KEY, Preset, get_by_hash, get_by_key
