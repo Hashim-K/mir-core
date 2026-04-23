@@ -1,6 +1,6 @@
 {
   "key": "rapini2024_salsaset_beatnet",
-  "hash": "btk-a14aef639058a4c7",
+  "hash": "btk-9317e3e7ccce1bb4",
   "citation": "Rapini, A. and Jordanous, A. (2024). Beat Tracking for Salsa Music: Adapting and Benchmarking Models Using a Newly Introduced Salsa Dataset. Proc. 1st Latin American Music Information Retrieval Workshop (LAMIR), ISMIR.",
   "notes": [
     "Protocol: 5-fold CV on SalsaSet, 10% validation from training fold, best val-loss checkpoint, F-measure at +/-70ms tolerance (Rapini & Jordanous 2024 Section 4).",

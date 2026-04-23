@@ -1,6 +1,6 @@
 {
   "key": "heydari2021_beatnet",
-  "hash": "btk-8fec2f384db1fde8",
+  "hash": "btk-f7da34c142f89a6e",
   "citation": "Heydari, M., Cwitkowitz, F. and Duan, Z. (2021). BeatNet: CRNN and Particle Filtering for Online Joint Beat Downbeat and Meter Tracking. Proc. 22nd ISMIR Conference.",
   "notes": [
     "BeatNet preprocessing discrepancy \u2014 paper text vs official implementation: paper text states 93ms window / 46ms hop (~22fps). Official BeatNet GitHub and all published experiments use win=1408 samples (64ms) / hop=441 samples (20ms) = 50fps. We follow the official implementation (50fps) to match published numbers.",

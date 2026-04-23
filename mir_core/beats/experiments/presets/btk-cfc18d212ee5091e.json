@@ -1,6 +1,6 @@
 {
   "key": "davies2019_bocktcn",
-  "hash": "btk-b75eba7a86c16914",
+  "hash": "btk-cfc18d212ee5091e",
   "citation": "Davies, M.E.P. and B\u00f6ck, S. (2019). Temporal convolutional networks for musical audio beat tracking. Proc. 27th European Signal Processing Conference (EUSIPCO).",
   "notes": [
     "Architecture per Davies & B\u00f6ck 2019 Table I: 81-band log-magnitude spectrogram (12 bands/octave, 30-17kHz, 100fps), conv frontend (3x3+pool, 3x3+pool, 1x8 no pool), TCN dilations 2^0..2^10, kernel 5, 16 filters, ELU, spatial dropout 0.1.",

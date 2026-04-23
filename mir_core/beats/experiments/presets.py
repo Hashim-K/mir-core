@@ -22,7 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from mir_core.utils.hashing import stable_hash
+
 PRESETS_DIR: Path = Path(__file__).parent / "presets"
+TASK_PREFIX = "btk"
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,16 @@ def load_presets() -> dict[str, Preset]:
     for path in sorted(PRESETS_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text())
+            expected_hash = f"{TASK_PREFIX}-{stable_hash(data['config'])}"
+            if path.stem != expected_hash:
+                raise ValueError(
+                    f"Malformed preset file {path.name}: filename stem must be "
+                    f"{expected_hash} for its config"
+                )
+            if data.get("hash") != path.stem:
+                raise ValueError(
+                    f"Malformed preset file {path.name}: hash field must match filename stem"
+                )
             preset = Preset(
                 key=data["key"],
                 hash=path.stem,  # filename stem IS the hash (btk-…)

@@ -1,9 +1,9 @@
 # tests/test_presets.py
 """Tests for the beat tracking canonical experiment preset registry."""
 import json
-from pathlib import Path
 import pytest
-from mir_core.beats.experiments.presets import Preset, PRESETS, load_presets, PRESETS_DIR
+from mir_core.beats.experiments import experiment_hash
+from mir_core.beats.experiments.presets import Preset, load_presets, PRESETS_DIR
 
 
 def test_preset_dataclass_fields():
@@ -50,6 +50,26 @@ def test_preset_file_schema():
         assert data.get("hash") == f.stem, (
             f"{f.name}: 'hash' field '{data.get('hash')}' must match filename stem '{f.stem}'"
         )
+        assert experiment_hash(data["config"]) == f.stem, (
+            f"{f.name}: filename/hash must equal experiment_hash(config)"
+        )
+
+
+def test_load_presets_rejects_filename_that_does_not_match_config_hash(tmp_path, monkeypatch):
+    from mir_core.beats.experiments import presets as p_module
+
+    bad = tmp_path / "btk-0000000000000000.json"
+    bad.write_text(json.dumps({
+        "key": "bad",
+        "hash": "btk-0000000000000000",
+        "citation": "Author 2024",
+        "notes": [],
+        "config": {"experiment": {"name": "not-the-zero-hash"}},
+    }))
+    monkeypatch.setattr(p_module, "PRESETS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="filename stem must be"):
+        p_module.load_presets()
 
 
 def test_presets_registry_from_exports():
