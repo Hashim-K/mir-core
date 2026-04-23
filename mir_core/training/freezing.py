@@ -63,6 +63,30 @@ def get_beatnet_layer_groups() -> Dict[str, List[str]]:
     }
 
 
+def get_beast_layer_groups() -> Dict[str, List[str]]:
+    """
+    Get layer groups for the upstream BEAST TransformerModel.
+
+    The official implementation names the convolutional frontend conv1..conv3
+    and the streaming transformer stack ``encoder``.
+    """
+    return {
+        "conv_frontend": [
+            "conv1",
+            "maxpool1",
+            "dropout1",
+            "conv2",
+            "maxpool2",
+            "dropout2",
+            "conv3",
+            "maxpool3",
+            "dropout3",
+        ],
+        "encoder": ["encoder"],
+        "heads": ["out_linear", "dropout_t", "out_linear_t"],
+    }
+
+
 def freeze_layers(
     model: nn.Module,
     layer_patterns: List[str],
@@ -154,6 +178,8 @@ def setup_layer_freezing(
         layer_groups = get_bocktcn_layer_groups()
     elif model_type.lower() in ["beatnet", "beatnet_crnn", "crnn"]:
         layer_groups = get_beatnet_layer_groups()
+    elif model_type.lower() in ["beast", "official_beast"]:
+        layer_groups = get_beast_layer_groups()
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 

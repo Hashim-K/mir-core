@@ -23,6 +23,7 @@ from .freezing import (
     get_trainable_params,
     setup_layer_freezing,
     get_bocktcn_layer_groups,
+    get_beast_layer_groups,
     get_beatnet_layer_groups,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "get_trainable_params",
     "setup_layer_freezing",
     "get_bocktcn_layer_groups",
+    "get_beast_layer_groups",
     "get_beatnet_layer_groups",
 ]
 
