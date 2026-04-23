@@ -17,6 +17,11 @@ _metrics_path = (
 _spec = importlib.util.spec_from_file_location(
     "mir_core._evaluation_metrics_direct", _metrics_path
 )
+if _spec is None or _spec.loader is None:
+    raise ImportError(
+        f"Cannot locate mir_core.evaluation.metrics at {_metrics_path}. "
+        "Has the package layout changed?"
+    )
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
