@@ -1,0 +1,84 @@
+{
+  "key": "rapini2024_salsaset_beatnet",
+  "hash": "btk-a14aef639058a4c7",
+  "citation": "Rapini, A. and Jordanous, A. (2024). Beat Tracking for Salsa Music: Adapting and Benchmarking Models Using a Newly Introduced Salsa Dataset. Proc. 1st Latin American Music Information Retrieval Workshop (LAMIR), ISMIR.",
+  "notes": [
+    "Protocol: 5-fold CV on SalsaSet, 10% validation from training fold, best val-loss checkpoint, F-measure at +/-70ms tolerance (Rapini & Jordanous 2024 Section 4).",
+    "BeatNet preprocessing discrepancy \u2014 paper text vs official implementation: Heydari et al. 2021 paper text states a Hann window of 93ms and hop size of 46ms (~22fps). The official BeatNet GitHub implementation ships with win=1408 samples (64ms) / hop=441 samples (20ms) = 50fps, and all published experimental results were produced with these parameters. We follow the official implementation (50fps) to match published numbers. The paper text discrepancy is likely a description of an earlier prototype.",
+    "BeatNet architecture: 1D Conv (2 filters, kernel 10) + MaxPool/2 + FC-150 + 2x unidirectional LSTM (150 units) + FC-3 + softmax. Training: Adam lr=5e-4, batch=200, 8-sec segments (400 frames at 50fps), weighted cross-entropy (inverse class frequency)."
+  ],
+  "config": {
+    "experiment": {
+      "name": "rapini2024-salsaset-beatnet-salsa-only",
+      "seed": 42,
+      "condition": "salsa_only"
+    },
+    "data": {
+      "processed_root": "${MIR_DATA_ROOT}/datasets/processed",
+      "target_datasets": [
+        "salsaset_ft"
+      ],
+      "background_datasets": [],
+      "n_folds": 5,
+      "fold_index": "all",
+      "validation_fraction": 0.1,
+      "cache_features": true
+    },
+    "model": {
+      "name": "beatnet",
+      "input_dim": 272,
+      "hidden_dim": 150,
+      "num_layers": 2,
+      "dropout": 0.0,
+      "preprocessing": {
+        "sample_rate": 22050,
+        "win_length": 1408,
+        "hop_size": 441,
+        "n_bands": 24,
+        "mode": "online"
+      }
+    },
+    "training": {
+      "epochs": 100,
+      "batch_size": 200,
+      "num_workers": 0,
+      "device": "auto",
+      "optimizer": "adam",
+      "learning_rate": 0.0005,
+      "class_weights": "inverse_frequency",
+      "segment_frames": 400,
+      "segment_hop_fraction": 0.5,
+      "early_stopping_patience": 20,
+      "lr_plateau_factor": 0.2,
+      "lr_plateau_patience": 10,
+      "min_learning_rate": 1e-07,
+      "eval_every_n_epochs": 5
+    },
+    "postprocessing": {
+      "method": "particle_filter",
+      "min_bpm": 55.0,
+      "max_bpm": 215.0,
+      "particle_size": 1500,
+      "down_particle_size": 250,
+      "lambda_b": 60,
+      "lambda_d": 0.1,
+      "observation_lambda_b": "B56",
+      "observation_lambda_d": "B56",
+      "ig_threshold": 0.4
+    },
+    "evaluation": {
+      "tolerance": 0.07,
+      "primary_metric": "fmeasure",
+      "additional_metrics": [
+        "cmlc",
+        "cmlt",
+        "amlc",
+        "amlt",
+        "cemgil",
+        "pscore",
+        "goto",
+        "information_gain"
+      ]
+    }
+  }
+}
