@@ -1,21 +1,21 @@
 # tests/test_presets.py
-"""Tests for the canonical experiment preset registry."""
+"""Tests for the beat tracking canonical experiment preset registry."""
 import json
 from pathlib import Path
 import pytest
-from mir_core.experiments.presets import Preset, PRESETS, load_presets, PRESETS_DIR
+from mir_core.beats.experiments.presets import Preset, PRESETS, load_presets, PRESETS_DIR
 
 
 def test_preset_dataclass_fields():
     p = Preset(
         key="test_key",
-        hash="abc123",
+        hash="btk-abc123def456abcd",
         citation="Author 2024",
         config={"experiment": {"name": "test"}},
         notes=["note one"],
     )
     assert p.key == "test_key"
-    assert p.hash == "abc123"
+    assert p.hash == "btk-abc123def456abcd"
     assert isinstance(p.config, dict)
     assert isinstance(p.notes, list)
 
@@ -37,14 +37,23 @@ def test_preset_file_schema():
         assert "citation" in data, f"{f.name} missing 'citation'"
         assert "config" in data, f"{f.name} missing 'config'"
         assert "notes" in data, f"{f.name} missing 'notes'"
-        # filename stem IS the hash — must be non-empty hex string
-        assert f.stem and all(c in "0123456789abcdef" for c in f.stem), (
-            f"{f.name}: filename stem must be a lowercase hex hash, got '{f.stem}'"
+        # filename stem must be btk-{16 hex chars}
+        assert f.stem.startswith("btk-"), (
+            f"{f.name}: filename must start with 'btk-', got '{f.stem}'"
+        )
+        assert len(f.stem) == 20, (
+            f"{f.name}: hash must be 20 chars, got {len(f.stem)}"
+        )
+        assert all(c in "0123456789abcdef" for c in f.stem[4:]), (
+            f"{f.name}: hash suffix must be hex, got '{f.stem[4:]}'"
+        )
+        assert data.get("hash") == f.stem, (
+            f"{f.name}: 'hash' field '{data.get('hash')}' must match filename stem '{f.stem}'"
         )
 
 
 def test_presets_registry_from_exports():
-    """PRESETS exported from mir_core.experiments must equal load_presets()."""
-    from mir_core.experiments import PRESETS as top_level
-    from mir_core.experiments.presets import PRESETS as direct
+    """PRESETS exported from mir_core.beats.experiments must equal load_presets()."""
+    from mir_core.beats.experiments import PRESETS as top_level
+    from mir_core.beats.experiments.presets import PRESETS as direct
     assert top_level is direct
