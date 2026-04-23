@@ -37,40 +37,94 @@ def compute_ibi_stats(
     Compute inter-beat interval (IBI) statistics.
 
     Measures the distribution of time between consecutive beats:
-    mean, std, 95th and 99th percentiles, min/max, and range.
+    mean, median, std, coefficient of variation, 95th and 99th percentiles,
+    min/max, range, and tempo implied by the mean interval.
 
     Args:
         beats: Beat times in seconds (will be sorted internally)
         label: Prefix for returned keys (e.g. "ibi" -> "ibi_mean", ...)
 
     Returns:
-        Dict with keys ``{label}_mean``, ``{label}_std``, ``{label}_p95``,
-        ``{label}_p99``, ``{label}_min``, ``{label}_max``, ``{label}_range``,
-        ``{label}_n``.  All interval values are in seconds.
+        Dict with keys ``{label}_mean``, ``{label}_median``,
+        ``{label}_std``, ``{label}_cv``, ``{label}_p95``, ``{label}_p99``,
+        ``{label}_min``, ``{label}_max``, ``{label}_range``,
+        ``{label}_bpm_mean``, and ``{label}_n``. Interval values are in
+        seconds; BPM is beats per minute inferred from the mean interval.
     """
     beats = np.sort(np.asarray(beats, dtype=float))
     empty = {
         f"{label}_mean": 0.0,
+        f"{label}_median": 0.0,
         f"{label}_std": 0.0,
+        f"{label}_cv": 0.0,
         f"{label}_p95": 0.0,
         f"{label}_p99": 0.0,
         f"{label}_min": 0.0,
         f"{label}_max": 0.0,
         f"{label}_range": 0.0,
+        f"{label}_bpm_mean": 0.0,
         f"{label}_n": 0,
     }
     if len(beats) < 2:
         return empty
     intervals = np.diff(beats)
+    mean = float(np.mean(intervals))
+    std = float(np.std(intervals))
     return {
-        f"{label}_mean":  float(np.mean(intervals)),
-        f"{label}_std":   float(np.std(intervals)),
+        f"{label}_mean":  mean,
+        f"{label}_median": float(np.median(intervals)),
+        f"{label}_std":   std,
+        f"{label}_cv":    float(std / mean) if mean > 0 else 0.0,
         f"{label}_p95":   float(np.percentile(intervals, 95)),
         f"{label}_p99":   float(np.percentile(intervals, 99)),
         f"{label}_min":   float(np.min(intervals)),
         f"{label}_max":   float(np.max(intervals)),
         f"{label}_range": float(np.max(intervals) - np.min(intervals)),
+        f"{label}_bpm_mean": float(60.0 / mean) if mean > 0 else 0.0,
         f"{label}_n":     int(len(intervals)),
+    }
+
+
+def compute_count_tempo_diagnostics(
+    beats_pred: np.ndarray,
+    beats_ann: np.ndarray,
+) -> Dict[str, float]:
+    """Compute count, IBI-difference, and tempo-ratio diagnostics."""
+    pred_stats = compute_ibi_stats(beats_pred, "ibi")
+    ann_stats = compute_ibi_stats(beats_ann, "ibi_ann")
+    num_pred = int(len(beats_pred))
+    num_ann = int(len(beats_ann))
+
+    pred_tempo = pred_stats["ibi_bpm_mean"]
+    ann_tempo = ann_stats["ibi_ann_bpm_mean"]
+    count_error = num_pred - num_ann
+    ibi_mean_error = pred_stats["ibi_mean"] - ann_stats["ibi_ann_mean"]
+    ibi_std_error = pred_stats["ibi_std"] - ann_stats["ibi_ann_std"]
+    tempo_error = pred_tempo - ann_tempo
+    tempo_ratio = pred_tempo / ann_tempo if ann_tempo > 0 else 0.0
+
+    return {
+        "beat_count_ratio": float(num_pred / num_ann) if num_ann > 0 else 0.0,
+        "beat_count_error": float(count_error),
+        "beat_count_abs_error": float(abs(count_error)),
+        "beat_count_abs_error_pct": float(abs(count_error) / num_ann) if num_ann > 0 else 0.0,
+        "ibi_mean_error": float(ibi_mean_error),
+        "ibi_mean_abs_error": float(abs(ibi_mean_error)),
+        "ibi_mean_abs_error_pct": (
+            float(abs(ibi_mean_error) / ann_stats["ibi_ann_mean"])
+            if ann_stats["ibi_ann_mean"] > 0
+            else 0.0
+        ),
+        "ibi_std_error": float(ibi_std_error),
+        "ibi_std_abs_error": float(abs(ibi_std_error)),
+        "tempo_pred_bpm": float(pred_tempo),
+        "tempo_ann_bpm": float(ann_tempo),
+        "tempo_error_bpm": float(tempo_error),
+        "tempo_abs_error_bpm": float(abs(tempo_error)),
+        "tempo_abs_error_pct": float(abs(tempo_error) / ann_tempo) if ann_tempo > 0 else 0.0,
+        "tempo_ratio": float(tempo_ratio),
+        "tempo_doubling_suspected": float(abs(tempo_ratio - 2.0) <= 0.15),
+        "tempo_halving_suspected": float(abs(tempo_ratio - 0.5) <= 0.075),
     }
 
 
@@ -144,27 +198,32 @@ def compute_beat_metrics(
     Returns:
         Dictionary with all computed metrics
     """
-    # Handle empty predictions/annotations
+    beats_pred = np.sort(np.asarray(beats_pred, dtype=float))
+    beats_ann = np.sort(np.asarray(beats_ann, dtype=float))
+
+    metrics: Dict[str, float] = {}
+
+    # Handle empty predictions/annotations while keeping a uniform schema.
     if len(beats_pred) == 0 or len(beats_ann) == 0:
-        return {
-            "fmeasure": 0.0,
-            "cemgil": 0.0,
-            "pscore": 0.0,
-            "goto": 0.0,
-            "cmlc": 0.0,
-            "cmlt": 0.0,
-            "amlc": 0.0,
-            "amlt": 0.0,
-            "information_gain": 0.0,
-            "num_pred": len(beats_pred),
-            "num_ann": len(beats_ann),
-        }
-
-    # Ensure sorted arrays
-    beats_pred = np.sort(beats_pred)
-    beats_ann = np.sort(beats_ann)
-
-    metrics = {}
+        metrics.update(
+            {
+                "fmeasure": 0.0,
+                "cemgil": 0.0,
+                "pscore": 0.0,
+                "goto": 0.0,
+                "cmlc": 0.0,
+                "cmlt": 0.0,
+                "amlc": 0.0,
+                "amlt": 0.0,
+                "information_gain": 0.0,
+                "num_pred": len(beats_pred),
+                "num_ann": len(beats_ann),
+            }
+        )
+        metrics.update(compute_ibi_stats(beats_pred, "ibi"))
+        metrics.update(compute_ibi_stats(beats_ann,  "ibi_ann"))
+        metrics.update(compute_count_tempo_diagnostics(beats_pred, beats_ann))
+        return metrics
 
     # F-measure
     metrics["fmeasure"] = mir_eval.beat.f_measure(
@@ -209,6 +268,7 @@ def compute_beat_metrics(
     # Inter-beat interval stats for predictions and annotations
     metrics.update(compute_ibi_stats(beats_pred, "ibi"))
     metrics.update(compute_ibi_stats(beats_ann,  "ibi_ann"))
+    metrics.update(compute_count_tempo_diagnostics(beats_pred, beats_ann))
 
     return metrics
 
@@ -262,9 +322,6 @@ def evaluate_beats(
 
         pred = predictions[track_id]
         ann = annotations[track_id]
-
-        if len(pred) == 0 or len(ann) == 0:
-            continue
 
         track_metrics = compute_beat_metrics(pred, ann, tolerance)
         for key, value in track_metrics.items():

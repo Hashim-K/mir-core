@@ -31,6 +31,7 @@ evaluate_beats = _mod.evaluate_beats
 evaluate_downbeats = _mod.evaluate_downbeats
 compute_per_track_metrics = _mod.compute_per_track_metrics
 compute_ibi_stats = _mod.compute_ibi_stats
+compute_count_tempo_diagnostics = _mod.compute_count_tempo_diagnostics
 
 __all__ = [
     "compute_beat_metrics",
@@ -39,4 +40,5 @@ __all__ = [
     "evaluate_downbeats",
     "compute_per_track_metrics",
     "compute_ibi_stats",
+    "compute_count_tempo_diagnostics",
 ]
