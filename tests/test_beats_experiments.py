@@ -90,3 +90,12 @@ def test_load_presets_raises_on_missing_required_key(tmp_path, monkeypatch):
     monkeypatch.setattr(p_module, "PRESETS_DIR", tmp_path)
     with pytest.raises(ValueError, match="Malformed preset file"):
         p_module.load_presets()
+
+
+def test_beats_evaluation_imports():
+    from mir_core.beats.evaluation import (
+        compute_beat_metrics,
+        compute_downbeat_metrics,
+    )
+    assert callable(compute_beat_metrics)
+    assert callable(compute_downbeat_metrics)
