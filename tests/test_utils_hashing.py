@@ -4,8 +4,8 @@ from mir_core.utils.hashing import canonical_json, stable_digest, stable_hash
 
 
 def test_stable_hash_is_deterministic():
-    config = {"a": 1, "b": 2}
-    assert stable_hash(config) == stable_hash(config)
+    # Pin the output so algorithm or serialisation regressions are caught.
+    assert stable_hash({"a": 1, "b": 2}) == "43258cff783fe703"
 
 
 def test_stable_hash_is_order_independent():
@@ -21,8 +21,9 @@ def test_stable_hash_default_length():
 
 
 def test_stable_hash_custom_length():
-    result = stable_hash({"x": 1}, length=8)
-    assert len(result) == 8
+    full = stable_hash({"x": 1}, length=64)
+    short = stable_hash({"x": 1}, length=8)
+    assert short == full[:8]
 
 
 def test_stable_digest_full_length():

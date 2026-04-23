@@ -3,7 +3,7 @@
 
 Functions:
     canonical_json  — deterministic JSON serialisation
-    stable_digest   — full SHA-256 hex of any JSON-serialisable value
+    stable_digest   — SHA-256 hex digest (full or truncated) of any JSON-serialisable value
     stable_hash     — first N hex chars of SHA-256 (default 16)
 """
 from __future__ import annotations
@@ -15,7 +15,11 @@ from typing import Any
 
 
 def canonical_json(value: Any) -> str:
-    """Serialise a value to deterministic JSON (sorted keys, no whitespace)."""
+    """Serialise a value to deterministic JSON (sorted keys, no whitespace).
+
+    Non-JSON-native types (e.g. numpy scalars, datetime) are coerced via str().
+    Callers must ensure config values are standard Python types for reliable hashes.
+    """
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
