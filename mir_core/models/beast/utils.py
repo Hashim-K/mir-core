@@ -1,4 +1,4 @@
-"""Model-only BEAST utility subset copied from upstream ``code/utils.py``."""
+"""Model-only BEAST utility subset."""
 
 from __future__ import annotations
 

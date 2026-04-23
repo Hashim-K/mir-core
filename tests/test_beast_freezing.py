@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from mir_core.models.beast.upstream import TransformerModel
+from mir_core.models import BEAST
 from mir_core.training.freezing import setup_layer_freezing
 
 
 def test_beast_conv_frontend_freezing_group() -> None:
-    model = TransformerModel(
+    model = BEAST(
         dmodel=32,
         nhead=4,
         d_hid=64,

@@ -17,7 +17,7 @@ try:
     from .models import (
         BeatNetCRNN, BeatNetBatch, BeatNetCRNNBatch, MultiHeadBeatNet,
         ResBlock, TCN, BockTCN,
-        BEAST, BEASTBatch,
+        BEAST,
         GenreClassifier, GenreRouter, GENRE_LABELS,
     )
 except ModuleNotFoundError:
@@ -29,7 +29,6 @@ except ModuleNotFoundError:
     TCN = None
     BockTCN = None
     BEAST = None
-    BEASTBatch = None
     GenreClassifier = None
     GenreRouter = None
     GENRE_LABELS = []

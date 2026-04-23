@@ -464,7 +464,7 @@ def load_model(
         >>> model = load_model("beatnet-pretrained", device="cuda")
     """
     # Import model classes here to avoid circular imports
-    from mir_core.models import BockTCN, BeatNetCRNN, BeatNetBatch, BEAST, BEASTBatch
+    from mir_core.models import BockTCN, BeatNetBatch, BEAST
     from mir_core.models import GenreClassifier
 
     MODEL_CLASSES = {

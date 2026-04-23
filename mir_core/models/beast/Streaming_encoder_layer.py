@@ -7,7 +7,7 @@ import numpy as np
 
 import torch
 from torch import nn
-import torch.nn.functional as F 
+import torch.nn.functional as F
 
 try:
     from typeguard import check_argument_types
@@ -245,7 +245,7 @@ class ContextualBlockTransformerEncoder(AbsEncoder):
         Returns:
             position embedded tensor and mask
         """
-        B, L, D =xs_pad.shape 
+        B, L, D =xs_pad.shape
         ilens = torch.ones(B)*L
         masks = (~make_pad_mask(ilens)[:, None, :]).to(xs_pad.device)
 
@@ -278,7 +278,7 @@ class ContextualBlockTransformerEncoder(AbsEncoder):
         addin = xs_pad.new_zeros(
             bsize, block_num, xs_pad.size(-1)
         )  # additional context embedding vecctors  (batch, block_num, d_model)
-        
+
 
         # first step
         if self.init_average:  # initialize with average value

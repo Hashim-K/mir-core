@@ -1,14 +1,18 @@
-"""Smoke tests for the vendored upstream BEAST model."""
+"""Smoke tests for BEAST."""
 
 from __future__ import annotations
 
 import torch
 
-from mir_core.models.beast.upstream import TransformerModel
+from mir_core.models import BEAST
 
 
-def test_upstream_beast_preserves_checkpoint_key_names() -> None:
-    model = TransformerModel(
+def test_beast_is_public_model() -> None:
+    assert BEAST.__name__ == "BEAST"
+
+
+def test_beast_preserves_checkpoint_key_names() -> None:
+    model = BEAST(
         dmodel=32,
         nhead=4,
         d_hid=64,
@@ -25,9 +29,9 @@ def test_upstream_beast_preserves_checkpoint_key_names() -> None:
     assert "out_linear_t.weight" in keys
 
 
-def test_upstream_beast_forward_returns_raw_logits() -> None:
+def test_beast_forward_returns_raw_logits() -> None:
     torch.manual_seed(0)
-    model = TransformerModel(
+    model = BEAST(
         dmodel=32,
         nhead=4,
         d_hid=64,
