@@ -15,6 +15,7 @@ Key components:
 
 from .metrics import (
     compute_beat_metrics,
+    compute_count_tempo_diagnostics,
     compute_downbeat_metrics,
     compute_ibi_stats,
     compute_interdownbeat_stats,
@@ -27,15 +28,10 @@ from .metrics import (
 
 from .evaluator import BeatEvaluator
 
-from .visualization import (
-    plot_predictions,
-    plot_activations,
-    print_evaluation_summary,
-)
-
 __all__ = [
     # Metrics
     "compute_beat_metrics",
+    "compute_count_tempo_diagnostics",
     "compute_downbeat_metrics",
     "compute_ibi_stats",
     "compute_interdownbeat_stats",
@@ -51,3 +47,14 @@ __all__ = [
     "plot_activations",
     "print_evaluation_summary",
 ]
+
+
+def __getattr__(name: str):
+    """Load plotting helpers only when requested."""
+    if name in {"plot_predictions", "plot_activations", "print_evaluation_summary"}:
+        from . import visualization
+
+        value = getattr(visualization, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

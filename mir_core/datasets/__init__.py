@@ -30,14 +30,6 @@ from .annotations import (
 )
 from .beat_tracking_dataset import BeatTrackingDataset
 from .genre_dataset import GenreDataset
-from .loaders import (
-    load_dataset_tracks,
-    load_salsaset_tracks,
-    load_salsa_dataset_tracks,
-    load_genre_dataset,
-    SALSASET_REPO_URL,
-    SALSA_DATASET_REPO_URL,
-)
 from .splits import (
     get_dataset_splits,
     get_kfold_splits,
@@ -74,3 +66,21 @@ __all__ = [
     "create_dataloaders",
     "CrossValidationRunner",
 ]
+
+
+def __getattr__(name: str):
+    """Load optional mirdata-backed helpers only when explicitly requested."""
+    if name in {
+        "load_dataset_tracks",
+        "load_salsaset_tracks",
+        "load_salsa_dataset_tracks",
+        "load_genre_dataset",
+        "SALSASET_REPO_URL",
+        "SALSA_DATASET_REPO_URL",
+    }:
+        from . import loaders
+
+        value = getattr(loaders, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

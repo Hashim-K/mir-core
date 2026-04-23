@@ -17,7 +17,6 @@ Freezing utilities:
     get_beatnet_layer_groups   — Get layer groups for BeatNet CRNN model.
 """
 
-from .modules import BeatTrackingModule, BeatNetModule, GenreClassifierModule
 from .freezing import (
     freeze_layers,
     unfreeze_layers,
@@ -40,3 +39,14 @@ __all__ = [
     "get_bocktcn_layer_groups",
     "get_beatnet_layer_groups",
 ]
+
+
+def __getattr__(name: str):
+    """Load Lightning training modules only when requested."""
+    if name in {"BeatTrackingModule", "BeatNetModule", "GenreClassifierModule"}:
+        from . import modules
+
+        value = getattr(modules, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

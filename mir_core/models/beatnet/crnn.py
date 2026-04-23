@@ -288,6 +288,7 @@ class BeatNetBatch(nn.Module):
         downbeats = probs[:, :, 2]
 
         return {
+            "logits": logits,
             "beats": beats.unsqueeze(-1),
             "downbeats": downbeats.unsqueeze(-1),
             "activations": probs,

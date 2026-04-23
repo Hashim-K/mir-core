@@ -15,7 +15,6 @@ Classes:
 from typing import Dict, List, Tuple, Optional, Any
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 from .beat_tracking_dataset import BeatTrackingDataset
 
@@ -38,6 +37,8 @@ def get_dataset_splits(
     Returns:
         Tuple of (train_keys, val_keys, test_keys)
     """
+    from sklearn.model_selection import train_test_split
+
     train_keys, test_keys = train_test_split(
         track_keys,
         test_size=test_size,
@@ -184,6 +185,8 @@ def get_incremental_training_splits(
     Returns:
         Tuple of (test_keys, list of training_keys for each n)
     """
+    from sklearn.model_selection import train_test_split
+
     train_pool, test_keys = train_test_split(
         track_keys,
         test_size=test_size,
@@ -255,6 +258,8 @@ class CrossValidationRunner:
 
         # Split training into train/val
         if val_size > 0:
+            from sklearn.model_selection import train_test_split
+
             train_keys, val_keys = train_test_split(
                 train_keys,
                 test_size=val_size,
