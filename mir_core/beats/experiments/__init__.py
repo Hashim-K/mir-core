@@ -27,10 +27,10 @@ TASK_PREFIX = "btk"
 def experiment_hash(config: Mapping[str, Any], length: int = 16) -> str:
     """Return the canonical beat tracking experiment hash.
 
-    Format: 'btk-{16-hex-chars}' — always 20 characters.
-    The 'btk' prefix identifies this as a beat tracking experiment.
-    Pass the unexpanded config (env vars not substituted) for
-    machine-independent hashes.
+    Format: 'btk-{length}-hex-chars'. With the default length=16, this is
+    always 20 characters ('btk-' + 16 hex). The 'btk' prefix identifies this
+    as a beat tracking experiment. Pass the unexpanded config (env vars not
+    substituted) for machine-independent hashes.
     """
     return f"{TASK_PREFIX}-{stable_hash(config, length=length)}"
 

@@ -62,9 +62,9 @@ PRESETS: dict[str, Preset] = load_presets()
 PRESETS_BY_KEY: dict[str, Preset] = {p.key: p for p in PRESETS.values()}
 
 
-def get_by_hash(experiment_hash: str) -> Preset | None:
+def get_by_hash(hash_key: str) -> Preset | None:
     """Return preset for a given experiment hash, or None."""
-    return PRESETS.get(experiment_hash)
+    return PRESETS.get(hash_key)
 
 
 def get_by_key(key: str) -> Preset | None:

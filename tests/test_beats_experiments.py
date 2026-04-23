@@ -1,5 +1,6 @@
 # tests/test_beats_experiments.py
 """Tests for mir_core.beats.experiments."""
+import pytest
 from mir_core.beats.experiments import (
     Preset,
     PRESETS,
@@ -70,3 +71,22 @@ def test_get_by_hash_unknown_returns_none():
 
 def test_get_by_key_unknown_returns_none():
     assert get_by_key("nonexistent_key") is None
+
+
+def test_load_presets_raises_on_malformed_json(tmp_path, monkeypatch):
+    from mir_core.beats.experiments import presets as p_module
+    bad = tmp_path / "btk-badhash0000000.json"
+    bad.write_text("{not valid json")
+    monkeypatch.setattr(p_module, "PRESETS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="Malformed preset file"):
+        p_module.load_presets()
+
+
+def test_load_presets_raises_on_missing_required_key(tmp_path, monkeypatch):
+    import json
+    from mir_core.beats.experiments import presets as p_module
+    bad = tmp_path / "btk-badhash0000000.json"
+    bad.write_text(json.dumps({"citation": "Author 2024"}))  # missing "key" and "config"
+    monkeypatch.setattr(p_module, "PRESETS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="Malformed preset file"):
+        p_module.load_presets()
