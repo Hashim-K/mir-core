@@ -17,10 +17,10 @@ The **filename stem is the experiment hash** (e.g. `btk-a14aef639058a4c7.json`).
 
 | Hash | Key | Paper |
 |------|-----|-------|
-| `btk-a14aef639058a4c7` | `rapini2024_salsaset_beatnet` | Rapini & Jordanous 2024 (LAMIR) |
-| `btk-875884b5ff6ad78a` | `rapini2024_salsaset_bocktcn` | Rapini & Jordanous 2024 (LAMIR) |
-| `btk-8fec2f384db1fde8` | `heydari2021_beatnet` | Heydari et al. 2021 (ISMIR) |
-| `btk-b75eba7a86c16914` | `davies2019_bocktcn` | Davies & Böck 2019 (EUSIPCO) |
+| `btk-9317e3e7ccce1bb4` | `rapini2024_salsaset_beatnet` | Rapini & Jordanous 2024 (LAMIR) |
+| `btk-4a4e9f89b8cecf4a` | `rapini2024_salsaset_bocktcn` | Rapini & Jordanous 2024 (LAMIR) |
+| `btk-f7da34c142f89a6e` | `heydari2021_beatnet` | Heydari et al. 2021 (ISMIR) |
+| `btk-cfc18d212ee5091e` | `davies2019_bocktcn` | Davies & Böck 2019 (EUSIPCO) |
 
 Run `python -c "from mir_core.beats.experiments import PRESETS_BY_KEY; print(list(PRESETS_BY_KEY))"` to list current keys.
 
