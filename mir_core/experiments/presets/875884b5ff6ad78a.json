@@ -51,7 +51,8 @@
       "early_stopping_patience": 50,
       "lr_plateau_factor": 0.2,
       "lr_plateau_patience": 10,
-      "min_learning_rate": 1e-07
+      "min_learning_rate": 1e-07,
+      "eval_every_n_epochs": 5
     },
     "postprocessing": {
       "method": "dbn_downbeat",
