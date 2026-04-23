@@ -99,3 +99,24 @@ def test_beats_evaluation_imports():
     )
     assert callable(compute_beat_metrics)
     assert callable(compute_downbeat_metrics)
+
+
+def test_classifier_experiments_imports():
+    from mir_core.classifier.experiments import experiment_hash, PRESETS
+    assert callable(experiment_hash)
+    assert isinstance(PRESETS, dict)
+
+
+def test_classifier_experiment_hash_has_clf_prefix():
+    from mir_core.classifier.experiments import experiment_hash
+    config = {"model": {"name": "genre_classifier"}, "seed": 42}
+    h = experiment_hash(config)
+    assert h.startswith("clf-"), f"Expected 'clf-' prefix, got: {h}"
+    assert len(h) == 20
+
+
+def test_classifier_evaluation_stubs_importable():
+    from mir_core.classifier.evaluation import accuracy, macro_f1, confusion_matrix
+    assert callable(accuracy)
+    assert callable(macro_f1)
+    assert callable(confusion_matrix)
