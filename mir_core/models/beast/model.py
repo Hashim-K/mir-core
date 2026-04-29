@@ -4,6 +4,14 @@ from .Streaming_encoder_layer import ContextualBlockTransformerEncoder
 
 
 class BEAST(nn.Module):
+    """BEAST streaming Transformer for joint beat and downbeat activation.
+
+    Constructor defaults preserve the original BEAST repository's
+    ``StreamingTransformer.py`` signature for checkpoint compatibility.
+    The published/train-time configuration uses ``nhead=8`` and
+    ``d_hid=1024`` explicitly in the upstream train/eval scripts.
+    """
+
     def __init__(self, ntoken=2, dmodel=256, nhead=2, d_hid=2048, nlayers=9, norm_first=True, dropout=.1, left_size=256, center_size=16, right_size=16):
         super(BEAST, self).__init__()
         self.nhead = nhead

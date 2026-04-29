@@ -11,6 +11,31 @@ def test_beast_is_public_model() -> None:
     assert BEAST.__name__ == "BEAST"
 
 
+def test_beast_defaults_match_upstream_constructor() -> None:
+    model = BEAST()
+
+    assert model.nhead == 2
+    assert model.nlayers == 9
+    assert model.encoder.left == 256
+    assert model.encoder.center == 16
+    assert model.encoder.look_ahead == 16
+    assert model.encoder.encoders[0].self_attn.h == 2
+    assert model.encoder.encoders[0].feed_forward.w_1.out_features == 2048
+
+
+def test_beast_paper_configuration_is_available_explicitly() -> None:
+    model = BEAST(nhead=8, d_hid=1024)
+
+    assert model.nhead == 8
+    assert model.nlayers == 9
+    assert model.encoder.left == 256
+    assert model.encoder.center == 16
+    assert model.encoder.look_ahead == 16
+    assert model.encoder.encoders[0].self_attn.h == 8
+    assert model.encoder.encoders[0].feed_forward.w_1.out_features == 1024
+    assert sum(p.numel() for p in model.parameters() if p.requires_grad) == 7_410_606
+
+
 def test_beast_preserves_checkpoint_key_names() -> None:
     model = BEAST(
         dmodel=32,
