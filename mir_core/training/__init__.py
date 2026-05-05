@@ -5,7 +5,7 @@ Provides PyTorch Lightning modules and layer freezing helpers.
 
 Modules:
     BeatTrackingModule    — BCE-loss module for BockTCN (1-class beat output).
-    BeatNetModule         — CE-loss module for BeatNet (3-class: non-beat / beat / downbeat).
+    BeatNetModule         — CE-loss module for BeatNet (3-class: beat / downbeat / non-beat).
     GenreClassifierModule — CE-loss module for genre classification.
 
 Freezing utilities:

@@ -100,8 +100,9 @@ class MultiHeadBeatNet(nn.Module):
         lstm_out, _ = head["lstm"](x_seq)
         logits = head["linear"](lstm_out)  # (batch, time, 3)
         probs = F.softmax(logits, dim=-1)
-        beats = probs[:, :, 1] + probs[:, :, 2]
-        downbeats = probs[:, :, 2]
+        # Official BeatNet class order is [beat, downbeat, non-beat].
+        beats = probs[:, :, 0]
+        downbeats = probs[:, :, 1]
         return {
             "beats": beats.unsqueeze(-1),
             "downbeats": downbeats.unsqueeze(-1),

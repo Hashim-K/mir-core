@@ -9,7 +9,7 @@ Architecture:
 2. MaxPool1D: kernel_size=2
 3. Linear projection to hidden_dim (150)
 4. 2-layer unidirectional LSTM (150 hidden units)
-5. Linear output layer (3 classes: non-beat, beat, downbeat)
+5. Linear output layer (3 classes: beat, downbeat, non-beat)
 """
 
 from typing import Dict, Optional
@@ -83,7 +83,7 @@ class BeatNetCRNN(nn.Module):
             bidirectional=False,
         )
 
-        # Output layer: 3 classes (non-beat, beat, downbeat)
+        # Output layer: 3 classes (beat, downbeat, non-beat)
         self.linear = nn.Linear(hidden_dim, 3)
         self.softmax = nn.Softmax(dim=0)  # Per official implementation
 
@@ -153,7 +153,8 @@ class BeatNetCRNN(nn.Module):
 
     def final_pred(self, logits: torch.Tensor) -> torch.Tensor:
         """Apply softmax to get final predictions (per official implementation)."""
-        return self.softmax(logits)
+        class_dim = 0 if logits.ndim == 2 else 1
+        return F.softmax(logits, dim=class_dim)
 
     def _num_flat_features(self, x: torch.Tensor) -> int:
         """Calculate flattened feature size."""
@@ -187,9 +188,9 @@ class BeatNetCRNN(nn.Module):
         # Transpose to (batch, time, 3)
         probs = probs.transpose(1, 2)
 
-        # Class 0: non-beat, Class 1: beat, Class 2: downbeat
-        beats = probs[:, :, 1] + probs[:, :, 2]  # Beat = beat + downbeat
-        downbeats = probs[:, :, 2]
+        # Official BeatNet class order is [beat, downbeat, non-beat].
+        beats = probs[:, :, 0]
+        downbeats = probs[:, :, 1]
 
         return {
             "beats": beats.unsqueeze(-1),
@@ -283,9 +284,9 @@ class BeatNetBatch(nn.Module):
         logits = self.linear(lstm_out)  # (batch, time, 3)
         probs = F.softmax(logits, dim=-1)
 
-        # Extract beat and downbeat probabilities
-        beats = probs[:, :, 1] + probs[:, :, 2]
-        downbeats = probs[:, :, 2]
+        # Official BeatNet class order is [beat, downbeat, non-beat].
+        beats = probs[:, :, 0]
+        downbeats = probs[:, :, 1]
 
         return {
             "logits": logits,

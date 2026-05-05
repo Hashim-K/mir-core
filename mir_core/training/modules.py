@@ -3,7 +3,7 @@ PyTorch Lightning modules for beat tracking and genre classification training.
 
 Modules:
     BeatTrackingModule     — BCE-loss module for BockTCN (1-class beat output).
-    BeatNetModule          — CE-loss module for BeatNet (3-class: non-beat / beat / downbeat).
+    BeatNetModule          — CE-loss module for BeatNet (3-class: beat / downbeat / non-beat).
     GenreClassifierModule  — CE-loss module for genre classification.
 """
 
@@ -255,15 +255,15 @@ class BeatNetModule(L.LightningModule):
     """
     PyTorch Lightning module for BeatNet training.
 
-    Uses cross-entropy loss for 3-class classification:
-    - Class 0: Non-beat
-    - Class 1: Beat (non-downbeat)
-    - Class 2: Downbeat
+    Uses cross-entropy loss for the official BeatNet 3-class order:
+    - Class 0: Beat
+    - Class 1: Downbeat
+    - Class 2: Non-beat
 
     Args:
         model: BeatNet model (BeatNetCRNN or BeatNetBatch)
         learning_rate: Learning rate for optimizer
-        class_weights: Optional weights for class imbalance (default [0.1, 1.0, 1.0])
+        class_weights: Optional weights for class imbalance (default [1.0, 1.0, 0.1])
         optimizer: Optimizer type ('adam', 'radam', 'sgd')
     """
 
@@ -282,7 +282,7 @@ class BeatNetModule(L.LightningModule):
 
         # Default class weights for imbalanced data
         if class_weights is None:
-            class_weights = [0.1, 1.0, 1.0]  # Down-weight non-beat class
+            class_weights = [1.0, 1.0, 0.1]  # Down-weight non-beat class
         self.register_buffer(
             "class_weights",
             torch.tensor(class_weights, dtype=torch.float32)
@@ -363,10 +363,10 @@ class BeatNetModule(L.LightningModule):
             with torch.no_grad():
                 if isinstance(output, torch.Tensor):
                     probs = F.softmax(output, dim=1)  # (batch, 3, time)
-                    beat_act = (probs[:, 1, :] + probs[:, 2, :]).squeeze().detach().cpu().numpy()
+                    beat_act = probs[:, 0, :].squeeze().detach().cpu().numpy()
                 elif isinstance(output, dict) and "activations" in output:
                     p = output["activations"]
-                    beat_act = (p[:, :, 1] + p[:, :, 2]).squeeze().detach().cpu().numpy()
+                    beat_act = p[:, :, 0].squeeze().detach().cpu().numpy()
                 else:
                     beat_act = None
                 if beat_act is not None:
@@ -407,18 +407,18 @@ class BeatNetModule(L.LightningModule):
 
         output = self(x)
 
-        # Get beat probabilities (class 1 + class 2)
+        # Get beat probabilities (official class 0)
         if isinstance(output, dict) and "beats" in output:
             beats_act = output["beats"].squeeze().detach().cpu().numpy()
         elif isinstance(output, dict) and "activations" in output:
             probs = output["activations"]  # (batch, time, 3)
-            beats = probs[:, :, 1] + probs[:, :, 2]  # Beat + downbeat
+            beats = probs[:, :, 0]
             beats_act = beats.squeeze().detach().cpu().numpy()
         elif isinstance(output, torch.Tensor):
             # BeatNetCRNN returns (batch, 3, time) logits
-            # Apply softmax to get probabilities, then sum beat + downbeat classes
+            # Apply softmax to get probabilities, then extract beat class.
             probs = F.softmax(output, dim=1)  # (batch, 3, time)
-            beats = probs[:, 1, :] + probs[:, 2, :]  # Beat + downbeat
+            beats = probs[:, 0, :]
             beats_act = beats.squeeze().detach().cpu().numpy()
         else:
             return {}
