@@ -1,5 +1,6 @@
 {
   "key": "heydari2021_beatnet",
+  "category": "training",
   "hash": "btk-f7da34c142f89a6e",
   "citation": "Heydari, M., Cwitkowitz, F. and Duan, Z. (2021). BeatNet: CRNN and Particle Filtering for Online Joint Beat Downbeat and Meter Tracking. Proc. 22nd ISMIR Conference.",
   "notes": [

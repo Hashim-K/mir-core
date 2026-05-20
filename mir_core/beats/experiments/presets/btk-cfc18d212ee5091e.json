@@ -1,5 +1,6 @@
 {
   "key": "davies2019_bocktcn",
+  "category": "training",
   "hash": "btk-cfc18d212ee5091e",
   "citation": "Davies, M.E.P. and B\u00f6ck, S. (2019). Temporal convolutional networks for musical audio beat tracking. Proc. 27th European Signal Processing Conference (EUSIPCO).",
   "notes": [

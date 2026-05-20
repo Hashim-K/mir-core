@@ -1,5 +1,6 @@
 {
   "key": "rapini2024_salsaset_bocktcn",
+  "category": "adapting",
   "hash": "btk-4a4e9f89b8cecf4a",
   "citation": "Rapini, A. and Jordanous, A. (2024). Beat Tracking for Salsa Music: Adapting and Benchmarking Models Using a Newly Introduced Salsa Dataset. Proc. 1st Latin American Music Information Retrieval Workshop (LAMIR), ISMIR.",
   "notes": [
