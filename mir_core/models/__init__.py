@@ -1,4 +1,5 @@
 from .beatnet.crnn import BeatNetCRNN, BeatNetBatch, BeatNetCRNNBatch
+from .beatnet.beatnet_plus import BeatNetPlusBatch, BeatNetPlusDualBatch, BeatNetPlusOnline
 from .beatnet.multihead import MultiHeadBeatNet
 from .bock_tcn.tcn import ResBlock, TCN, BockTCN
 from .beast import BEAST
