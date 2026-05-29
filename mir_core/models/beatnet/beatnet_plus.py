@@ -6,11 +6,18 @@ adapting outputs to the shared mir-core training/evaluation interface.
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventChannel,
+)
+from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
 
 
 class BeatNetPlusBatch(nn.Module):
@@ -20,6 +27,11 @@ class BeatNetPlusBatch(nn.Module):
     This matches the inference branch from the BeatNet+ reference code:
     288-dim LOG_SPECT features, a Conv1d frontend, and a 4-layer causal LSTM.
     """
+
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -60,20 +72,30 @@ class BeatNetPlusBatch(nn.Module):
         logits = self.output_linear(lstm_out)
         return logits, logits
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         logits, latent = self._forward_impl(x)
         probs = F.softmax(logits, dim=-1)
+        event_activations = frame_class_activations_to_event_activations(probs)
         return {
             "logits": logits,
             "latent": latent,
-            "beats": probs[:, :, 0].unsqueeze(-1),
-            "downbeats": probs[:, :, 1].unsqueeze(-1),
+            "beats": event_activations[:, :, int(EventChannel.beat)].unsqueeze(-1),
+            "downbeats": event_activations[:, :, int(EventChannel.downbeat)].unsqueeze(-1),
             "activations": probs,
+            "frame_class_activations": probs,
+            "frame_classes": probs.argmax(dim=-1),
+            "event_activations": event_activations,
+            "data_definition": self.output_definition,
         }
 
 
 class BeatNetPlusOnline(nn.Module):
     """Stateful online BeatNet+ branch compatible with Heydari's reference code."""
+
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -168,6 +190,11 @@ class BeatNetPlusOnline(nn.Module):
 class BeatNetPlusDualBatch(nn.Module):
     """BeatNet+ dual-branch wrapper for source-separated training."""
 
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
+
     def __init__(
         self,
         input_dim: int = 288,
@@ -193,21 +220,26 @@ class BeatNetPlusDualBatch(nn.Module):
         self,
         main_x: torch.Tensor,
         aux_x: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         main_logits, main_latent = self.main_branch._forward_impl(main_x)
         aux_logits, aux_latent = self.aux_branch._forward_impl(aux_x)
         probs = F.softmax(main_logits, dim=-1)
+        event_activations = frame_class_activations_to_event_activations(probs)
         return {
             "logits": main_logits,
             "aux_logits": aux_logits,
             "main_latent": main_latent,
             "aux_latent": aux_latent,
-            "beats": probs[:, :, 0].unsqueeze(-1),
-            "downbeats": probs[:, :, 1].unsqueeze(-1),
+            "beats": event_activations[:, :, int(EventChannel.beat)].unsqueeze(-1),
+            "downbeats": event_activations[:, :, int(EventChannel.downbeat)].unsqueeze(-1),
             "activations": probs,
+            "frame_class_activations": probs,
+            "frame_classes": probs.argmax(dim=-1),
+            "event_activations": event_activations,
+            "data_definition": self.output_definition,
         }
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         return self.main_branch(x)
 
     def get_main_state_dict(self) -> dict[str, torch.Tensor]:

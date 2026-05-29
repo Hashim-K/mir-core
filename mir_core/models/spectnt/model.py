@@ -13,11 +13,19 @@ SpecTNT frame outputs consistently.
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    FRAME_CLASS_NAMES,
+    EventChannel,
+)
+from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
 
 
 class Res2DMaxPoolModule(nn.Module):
@@ -238,7 +246,11 @@ Returns a dictionary with:
     - ``beats`` / ``downbeats``: single-channel frame activations
     """
 
-    class_order = ("beat", "downbeat", "non_beat")
+    class_order = FRAME_CLASS_NAMES
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -285,7 +297,7 @@ Returns a dictionary with:
         )
         self.linear_out = nn.Linear(embed_dim, n_classes)
 
-    def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, features: torch.Tensor) -> Dict[str, Any]:
         if features.ndim == 3:
             features = features.unsqueeze(1)
 
@@ -306,16 +318,21 @@ Returns a dictionary with:
 
         return self._format_outputs(upstream_logits)
 
-    def _format_outputs(self, logits: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _format_outputs(self, logits: torch.Tensor) -> Dict[str, Any]:
         activations = F.softmax(logits, dim=-1)
         classes = activations.argmax(dim=-1)
         one_hot = F.one_hot(classes, num_classes=3).to(activations.dtype)
+        event_activations = frame_class_activations_to_event_activations(activations)
 
         return {
             "logits": logits,
-            "beats": activations[:, :, 0].unsqueeze(-1),
-            "downbeats": activations[:, :, 1].unsqueeze(-1),
+            "beats": event_activations[:, :, int(EventChannel.beat)].unsqueeze(-1),
+            "downbeats": event_activations[:, :, int(EventChannel.downbeat)].unsqueeze(-1),
             "activations": activations,
+            "frame_class_activations": activations,
+            "frame_classes": classes,
+            "event_activations": event_activations,
             "one_hot": one_hot,
             "class_order": self.class_order,
+            "data_definition": self.output_definition,
         }

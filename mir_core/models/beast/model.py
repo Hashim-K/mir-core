@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION
+
 from .Streaming_encoder_layer import ContextualBlockTransformerEncoder
 
 
@@ -11,6 +13,11 @@ class BEAST(nn.Module):
     The published/train-time configuration uses ``nhead=8`` and
     ``d_hid=1024`` explicitly in the upstream train/eval scripts.
     """
+
+    output_definition = EVENT_ACTIVATION_DEFINITION
+    data_definition = EVENT_ACTIVATION_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(self, ntoken=2, dmodel=256, nhead=2, d_hid=2048, nlayers=9, norm_first=True, dropout=.1, left_size=256, center_size=16, right_size=16):
         super(BEAST, self).__init__()

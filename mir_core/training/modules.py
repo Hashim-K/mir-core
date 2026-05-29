@@ -25,6 +25,8 @@ from torch.utils.data import DataLoader
 import madmom
 import mir_eval
 
+from mir_core.beats.schema import BEAT_CHANNEL, FrameClass
+
 
 class BeatTrackingModule(L.LightningModule):
     """
@@ -363,10 +365,13 @@ class BeatNetModule(L.LightningModule):
             with torch.no_grad():
                 if isinstance(output, torch.Tensor):
                     probs = F.softmax(output, dim=1)  # (batch, 3, time)
-                    beat_act = probs[:, 0, :].squeeze().detach().cpu().numpy()
+                    beat_act = probs[:, int(FrameClass.beat), :].squeeze().detach().cpu().numpy()
+                elif isinstance(output, dict) and "event_activations" in output:
+                    p = output["event_activations"]
+                    beat_act = p[:, :, BEAT_CHANNEL].squeeze().detach().cpu().numpy()
                 elif isinstance(output, dict) and "activations" in output:
                     p = output["activations"]
-                    beat_act = p[:, :, 0].squeeze().detach().cpu().numpy()
+                    beat_act = p[:, :, int(FrameClass.beat)].squeeze().detach().cpu().numpy()
                 else:
                     beat_act = None
                 if beat_act is not None:
@@ -410,15 +415,19 @@ class BeatNetModule(L.LightningModule):
         # Get beat probabilities (official class 0)
         if isinstance(output, dict) and "beats" in output:
             beats_act = output["beats"].squeeze().detach().cpu().numpy()
+        elif isinstance(output, dict) and "event_activations" in output:
+            probs = output["event_activations"]  # (batch, time, 2)
+            beats = probs[:, :, BEAT_CHANNEL]
+            beats_act = beats.squeeze().detach().cpu().numpy()
         elif isinstance(output, dict) and "activations" in output:
             probs = output["activations"]  # (batch, time, 3)
-            beats = probs[:, :, 0]
+            beats = probs[:, :, int(FrameClass.beat)]
             beats_act = beats.squeeze().detach().cpu().numpy()
         elif isinstance(output, torch.Tensor):
             # BeatNetCRNN returns (batch, 3, time) logits
             # Apply softmax to get probabilities, then extract beat class.
             probs = F.softmax(output, dim=1)  # (batch, 3, time)
-            beats = probs[:, 0, :]
+            beats = probs[:, int(FrameClass.beat), :]
             beats_act = beats.squeeze().detach().cpu().numpy()
         else:
             return {}

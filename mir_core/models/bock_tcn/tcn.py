@@ -26,9 +26,15 @@ so output time = input time − 4. Account for this in target alignment.
 Paper: https://doi.org/10.23919/EUSIPCO.2019.8902843
 """
 
-from typing import List, Dict, Tuple
+from typing import Any, List, Dict, Tuple
 import torch
 import torch.nn as nn
+
+from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION
+from mir_core.beats.tensor_converters import (
+    event_activations_to_frame_class_activations,
+    event_activations_to_frame_classes,
+)
 
 
 class ResBlock(nn.Module):
@@ -195,6 +201,11 @@ class BockTCN(nn.Module):
         verbose: Print shape info during forward pass
     """
 
+    output_definition = EVENT_ACTIVATION_DEFINITION
+    data_definition = EVENT_ACTIVATION_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
+
     def __init__(
         self,
         n_filters: int = 16,
@@ -252,7 +263,7 @@ class BockTCN(nn.Module):
             self.tempo_dense = nn.Linear(n_filters, 300)
             self.tempo_act = nn.Softmax(dim=1)
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         """
         Forward pass.
 
@@ -306,6 +317,19 @@ class BockTCN(nn.Module):
                 self.downbeats_dense(self.downbeats_dropout(x))
             )
             outputs["downbeats"] = downbeats
+
+        downbeats_for_event = outputs.get("downbeats", torch.zeros_like(beats))
+        event_activations = torch.cat((beats, downbeats_for_event), dim=-1)
+        outputs.update(
+            {
+                "event_activations": event_activations,
+                "frame_class_activations": event_activations_to_frame_class_activations(
+                    event_activations
+                ),
+                "frame_classes": event_activations_to_frame_classes(event_activations),
+                "data_definition": self.output_definition,
+            }
+        )
 
         if self.include_tempo:
             # Use skip connections for tempo (global context)

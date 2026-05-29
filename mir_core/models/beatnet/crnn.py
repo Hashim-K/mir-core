@@ -12,10 +12,17 @@ Architecture:
 5. Linear output layer (3 classes: beat, downbeat, non-beat)
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventChannel,
+)
+from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
 
 
 class BeatNetCRNN(nn.Module):
@@ -40,6 +47,11 @@ class BeatNetCRNN(nn.Module):
         num_layers: Number of LSTM layers (default 2)
         device: torch device for hidden state initialization
     """
+
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -166,7 +178,7 @@ class BeatNetCRNN(nn.Module):
 
     def get_beat_downbeat_activations(
         self, data: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """
         Get beat and downbeat activation probabilities.
 
@@ -188,14 +200,18 @@ class BeatNetCRNN(nn.Module):
         # Transpose to (batch, time, 3)
         probs = probs.transpose(1, 2)
 
-        # Official BeatNet class order is [beat, downbeat, non-beat].
-        beats = probs[:, :, 0]
-        downbeats = probs[:, :, 1]
+        event_activations = frame_class_activations_to_event_activations(probs)
+        beats = event_activations[:, :, int(EventChannel.beat)]
+        downbeats = event_activations[:, :, int(EventChannel.downbeat)]
 
         return {
             "beats": beats.unsqueeze(-1),
             "downbeats": downbeats.unsqueeze(-1),
             "activations": probs,
+            "frame_class_activations": probs,
+            "frame_classes": probs.argmax(dim=-1),
+            "event_activations": event_activations,
+            "data_definition": self.output_definition,
         }
 
 
@@ -212,6 +228,11 @@ class BeatNetBatch(nn.Module):
         num_layers: Number of LSTM layers (2)
         dropout: Dropout rate for regularization
     """
+
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -250,7 +271,7 @@ class BeatNetBatch(nn.Module):
         # Output layer
         self.linear = nn.Linear(hidden_dim, 3)
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         """
         Forward pass for batch processing.
 
@@ -284,15 +305,19 @@ class BeatNetBatch(nn.Module):
         logits = self.linear(lstm_out)  # (batch, time, 3)
         probs = F.softmax(logits, dim=-1)
 
-        # Official BeatNet class order is [beat, downbeat, non-beat].
-        beats = probs[:, :, 0]
-        downbeats = probs[:, :, 1]
+        event_activations = frame_class_activations_to_event_activations(probs)
+        beats = event_activations[:, :, int(EventChannel.beat)]
+        downbeats = event_activations[:, :, int(EventChannel.downbeat)]
 
         return {
             "logits": logits,
             "beats": beats.unsqueeze(-1),
             "downbeats": downbeats.unsqueeze(-1),
             "activations": probs,
+            "frame_class_activations": probs,
+            "frame_classes": probs.argmax(dim=-1),
+            "event_activations": event_activations,
+            "data_definition": self.output_definition,
         }
 
 

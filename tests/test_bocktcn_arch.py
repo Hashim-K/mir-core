@@ -1,5 +1,6 @@
 """Verify BockTCN architecture matches Davies & Böck 2019 (EUSIPCO), Table I."""
 import torch
+from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION
 from mir_core.models.bock_tcn.tcn import BockTCN
 
 
@@ -14,6 +15,10 @@ def test_output_shape_beat_only():
     assert "beats" in out
     assert out["beats"].shape[0] == 2      # batch preserved
     assert out["beats"].shape[2] == 1      # single activation per frame
+    assert out["data_definition"] is EVENT_ACTIVATION_DEFINITION
+    assert out["event_activations"].shape == (2, 196, 2)
+    assert out["frame_class_activations"].shape == (2, 196, 3)
+    assert out["frame_classes"].shape == (2, 196)
     # time axis shrinks by 4 (2 frames lost per 3×3 valid conv × 2 layers)
     assert out["beats"].shape[1] == 196
 

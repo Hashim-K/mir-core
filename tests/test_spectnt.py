@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION, EventChannel
 from mir_core.models import SpecTNT
 from mir_core.models.spectnt import ResFrontEnd
 
@@ -42,10 +43,19 @@ def test_spectnt_public_output_matches_beatnet_class_order() -> None:
     output = model._format_outputs(logits)
 
     assert output["class_order"] == ("beat", "downbeat", "non_beat")
+    assert model.output_definition is FRAME_CLASS_DEFINITION
+    assert model.event_activation_definition is EVENT_ACTIVATION_DEFINITION
+    assert output["data_definition"] is FRAME_CLASS_DEFINITION
     assert torch.equal(output["one_hot"][0, 0], torch.tensor([1.0, 0.0, 0.0]))
     assert torch.equal(output["one_hot"][0, 1], torch.tensor([0.0, 0.0, 1.0]))
-    assert torch.allclose(output["beats"].squeeze(-1), output["activations"][:, :, 0])
-    assert torch.allclose(output["downbeats"].squeeze(-1), output["activations"][:, :, 1])
+    assert torch.allclose(
+        output["beats"].squeeze(-1),
+        output["event_activations"][:, :, int(EventChannel.beat)],
+    )
+    assert torch.allclose(
+        output["downbeats"].squeeze(-1),
+        output["event_activations"][:, :, int(EventChannel.downbeat)],
+    )
 
 
 def test_spectnt_forward_returns_framewise_three_class_output() -> None:
@@ -76,6 +86,9 @@ def test_spectnt_forward_returns_framewise_three_class_output() -> None:
 
     assert output["logits"].shape == (2, 4, 3)
     assert output["activations"].shape == (2, 4, 3)
+    assert output["frame_class_activations"].shape == (2, 4, 3)
+    assert output["frame_classes"].shape == (2, 4)
+    assert output["event_activations"].shape == (2, 4, 2)
     assert output["one_hot"].shape == (2, 4, 3)
     assert output["beats"].shape == (2, 4, 1)
     assert output["downbeats"].shape == (2, 4, 1)

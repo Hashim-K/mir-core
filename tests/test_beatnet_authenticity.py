@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION, EventChannel, FrameClass
 from mir_core.models.beatnet.crnn import BeatNetBatch, BeatNetCRNN
 from mir_core.models.beatnet.beatnet_plus import (
     BeatNetPlusBatch,
@@ -58,9 +59,25 @@ def test_beatnet_uses_official_output_class_order():
     output = model(torch.zeros(2, 5, 272))
     expected = torch.softmax(model.linear.bias, dim=0)
 
-    assert torch.allclose(output["beats"].squeeze(-1), expected[0].expand(2, 5))
-    assert torch.allclose(output["downbeats"].squeeze(-1), expected[1].expand(2, 5))
-    assert torch.allclose(output["activations"][:, :, 2], expected[2].expand(2, 5))
+    assert model.output_definition is FRAME_CLASS_DEFINITION
+    assert model.event_activation_definition is EVENT_ACTIVATION_DEFINITION
+    assert output["data_definition"] is FRAME_CLASS_DEFINITION
+    assert output["event_activations"].shape == (2, 5, 2)
+    assert output["frame_class_activations"].shape == (2, 5, 3)
+    assert output["frame_classes"].shape == (2, 5)
+    assert torch.allclose(output["beats"].squeeze(-1), expected[int(FrameClass.beat)].expand(2, 5))
+    assert torch.allclose(
+        output["downbeats"].squeeze(-1),
+        expected[int(FrameClass.downbeat)].expand(2, 5),
+    )
+    assert torch.allclose(
+        output["event_activations"][:, :, int(EventChannel.beat)],
+        expected[int(FrameClass.beat)].expand(2, 5),
+    )
+    assert torch.allclose(
+        output["activations"][:, :, int(FrameClass.non_beat)],
+        expected[int(FrameClass.non_beat)].expand(2, 5),
+    )
 
 
 def test_beatnet_final_pred_softmaxes_over_class_axis_for_batched_logits():

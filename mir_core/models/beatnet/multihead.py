@@ -5,10 +5,17 @@ Supports training modes A (fine-tune heads with frozen pretrained conv) and
 C (shared retrained conv + per-genre heads).
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventChannel,
+)
+from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
 
 from .crnn import BeatNetBatch, _strip_prefix
 
@@ -28,6 +35,11 @@ class MultiHeadBeatNet(nn.Module):
         num_layers: Number of LSTM layers per head.
         dropout: Dropout for LSTM (applied when num_layers > 1).
     """
+
+    output_definition = FRAME_CLASS_DEFINITION
+    data_definition = FRAME_CLASS_DEFINITION
+    frame_class_definition = FRAME_CLASS_DEFINITION
+    event_activation_definition = EVENT_ACTIVATION_DEFINITION
 
     def __init__(
         self,
@@ -82,7 +94,7 @@ class MultiHeadBeatNet(nn.Module):
     def forward_head(
         self, conv_features: torch.Tensor, genre: str,
         batch_size: int, time_steps: int,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """Run a single genre head on pre-computed conv features.
 
         Args:
@@ -100,16 +112,20 @@ class MultiHeadBeatNet(nn.Module):
         lstm_out, _ = head["lstm"](x_seq)
         logits = head["linear"](lstm_out)  # (batch, time, 3)
         probs = F.softmax(logits, dim=-1)
-        # Official BeatNet class order is [beat, downbeat, non-beat].
-        beats = probs[:, :, 0]
-        downbeats = probs[:, :, 1]
+        event_activations = frame_class_activations_to_event_activations(probs)
+        beats = event_activations[:, :, int(EventChannel.beat)]
+        downbeats = event_activations[:, :, int(EventChannel.downbeat)]
         return {
             "beats": beats.unsqueeze(-1),
             "downbeats": downbeats.unsqueeze(-1),
             "activations": probs,
+            "frame_class_activations": probs,
+            "frame_classes": probs.argmax(dim=-1),
+            "event_activations": event_activations,
+            "data_definition": self.output_definition,
         }
 
-    def forward_all(self, x: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
+    def forward_all(self, x: torch.Tensor) -> Dict[str, Dict[str, Any]]:
         """Run shared conv once, then all genre heads.
 
         Args:
