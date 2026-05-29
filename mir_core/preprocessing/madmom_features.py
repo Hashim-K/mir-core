@@ -28,6 +28,12 @@ from .utils import (
     BEATNET_HOP_LENGTH,
     BEATNET_WIN_LENGTH,
     BEATNET_N_BANDS,
+    BEATNET_FEATURE_DIM,
+    BEATNET_PLUS_SAMPLE_RATE,
+    BEATNET_PLUS_HOP_LENGTH,
+    BEATNET_PLUS_WIN_LENGTH,
+    BEATNET_PLUS_N_BANDS,
+    BEATNET_PLUS_FEATURE_DIM,
 )
 
 
@@ -107,6 +113,7 @@ class BeatNetPreProcessor:
         self.hop_size = hop_size
         self.n_bands = n_bands
         self.fps = sample_rate / hop_size  # Should be ~50 FPS
+        self.feature_dim = BEATNET_FEATURE_DIM if win_length == BEATNET_WIN_LENGTH else None
 
         # Build the madmom processing pipeline (matching official LOG_SPECT)
         sig = SignalProcessor(num_channels=1, sample_rate=sample_rate)
@@ -168,3 +175,33 @@ class BeatNetPreProcessor:
             return self.pipe(audio)
         signal = madmom.audio.Signal(audio, self.sample_rate, num_channels=1)
         return self.pipe(signal)
+
+
+class BeatNetPlusPreProcessor(BeatNetPreProcessor):
+    """
+    Official BeatNet+ LOG_SPECT feature extraction.
+
+    This matches the BeatNet+ reference defaults:
+    https://github.com/mjhydri/BeatNet-Plus/blob/main/src/BeatNetPlus/log_spect.py
+
+    The pipeline is the same LOG_SPECT family as BeatNet, but BeatNet+ uses an
+    80 ms analysis window. This increases the filtered spectrogram width and
+    produces 288-dimensional features (144 filterbank + 144 diff).
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = BEATNET_PLUS_SAMPLE_RATE,
+        win_length: int = BEATNET_PLUS_WIN_LENGTH,
+        hop_size: int = BEATNET_PLUS_HOP_LENGTH,
+        n_bands: int = BEATNET_PLUS_N_BANDS,
+        mode: str = 'online',
+    ):
+        super().__init__(
+            sample_rate=sample_rate,
+            win_length=win_length,
+            hop_size=hop_size,
+            n_bands=n_bands,
+            mode=mode,
+        )
+        self.feature_dim = BEATNET_PLUS_FEATURE_DIM

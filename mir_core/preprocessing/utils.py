@@ -27,6 +27,31 @@ BEATNET_SAMPLE_RATE = 22050
 BEATNET_HOP_LENGTH = 441  # 20ms hop -> 50 FPS
 BEATNET_WIN_LENGTH = 1408  # 64ms window
 BEATNET_N_BANDS = 24  # Results in 136-dim filterbank (with diff -> 272)
+BEATNET_FEATURE_DIM = 272
+
+# BeatNet+ defaults from Heydari & Duan's reference implementation.
+BEATNET_PLUS_SAMPLE_RATE = 22050
+BEATNET_PLUS_HOP_LENGTH = 441  # 20ms hop -> 50 FPS
+BEATNET_PLUS_WIN_LENGTH = 1764  # 80ms window
+BEATNET_PLUS_N_BANDS = 24  # Results in 144-dim filterbank (with diff -> 288)
+BEATNET_PLUS_FEATURE_DIM = 288
+
+# BEAST defaults from the released preprocessing script.
+BEAST_SAMPLE_RATE = 44100
+BEAST_N_FFT = 4096
+BEAST_HOP_LENGTH = 1024
+BEAST_N_MELS = 128
+BEAST_FMIN = 30.0
+BEAST_FMAX = 11000.0
+BEAST_FEATURE_DIM = 128
+
+# SpecTNT beat-tracking defaults from configs/beats.yaml.
+SPECTNT_SAMPLE_RATE = 16000
+SPECTNT_N_FFT = 512
+SPECTNT_HOP_LENGTH = 256
+SPECTNT_N_HARMONIC = 6
+SPECTNT_SEMITONE_SCALE = 2
+SPECTNT_N_FREQUENCIES = 128
 
 
 def infer_tempo(

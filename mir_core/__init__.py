@@ -46,6 +46,9 @@ try:
     from .preprocessing import (
         PreProcessor,
         BeatNetPreProcessor,
+        BeatNetPlusPreProcessor,
+        BeastPreProcessor,
+        SpecTNTPreProcessor,
         FPS,
         NUM_BANDS,
         FFT_SIZE,
@@ -54,6 +57,9 @@ try:
 except ModuleNotFoundError:
     PreProcessor = None
     BeatNetPreProcessor = None
+    BeatNetPlusPreProcessor = None
+    BeastPreProcessor = None
+    SpecTNTPreProcessor = None
     FPS = 100
     NUM_BANDS = 12
     FFT_SIZE = 2048
