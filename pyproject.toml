@@ -10,3 +10,6 @@ description = "Shared Python package for MSc thesis MIR project"
 
 [tool.setuptools.packages.find]
 include = ["mir_core*", "mir_env*"]
+
+[tool.setuptools.package-data]
+"mir_core.checkpoints.beatnet" = ["*.pt", "*.md"]
