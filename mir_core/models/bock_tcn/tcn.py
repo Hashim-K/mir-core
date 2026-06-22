@@ -1,8 +1,11 @@
 """
-BockTCN: Temporal Convolutional Network for beat and downbeat tracking.
+BockTCN: hybrid Temporal Convolutional Network for beat/downbeat tracking.
 
-Architecture matches Davies & Böck 2019, "Temporal convolutional networks
-for musical audio beat tracking" (EUSIPCO), Table I:
+This implementation is not a strict replica of one paper. It combines the
+Davies & Böck 2019 frontend/training defaults with the parallel-dilation TCN
+idea and optional downbeat/tempo heads from Böck & Davies 2020.
+
+The 2019-aligned pieces are:
 
   Signal conditioning:
     - 44.1 kHz audio, 2048-sample Hann window (46.4 ms), 10 ms hop → 100 fps
@@ -13,17 +16,26 @@ for musical audio beat tracking" (EUSIPCO), Table I:
     Layer 2: Conv2d 3×3, 16 filters  → MaxPool (1×3)   [26→8  freq bins]
     Layer 3: Conv2d 1×8, 16 filters  → no pooling      [8→1   freq bin]
 
-  TCN: 1 stack, dilations 2^0…2^10, 16 filters, kernel 5, ELU, dropout 0.1
+  TCN defaults: 1 stack, dilations 2^0…2^10, 16 filters, kernel 5,
+                ELU, dropout 0.1
 
-  Heads: sigmoid beat activation (and optional downbeat activation)
+  Heads: sigmoid beat activation plus optional downbeat/tempo heads
 
   Training: Adam lr=1e-3, batch=1, binary cross-entropy, ReduceLROnPlateau
              (factor 0.2, stop if no improvement for 50 epochs)
 
+The hybrid pieces are:
+  - Each residual TCN block uses two parallel dilated convolutions with base
+    and doubled dilation, following the 2020 improvement direction.
+  - Matrix training usually enables the downbeat head while keeping the 2019
+    16-filter/Adam setup and disabling the 2020 tempo-head loss.
+
 NOTE — time axis: valid padding on the two 3×3 layers removes 2 frames each,
 so output time = input time − 4. Account for this in target alignment.
 
-Paper: https://doi.org/10.23919/EUSIPCO.2019.8902843
+Papers:
+  - Davies & Böck 2019: https://doi.org/10.23919/EUSIPCO.2019.8902843
+  - Böck & Davies 2020: https://archives.ismir.net/ismir2020/paper/000105.pdf
 """
 
 from typing import Any, List, Dict, Tuple
@@ -182,14 +194,14 @@ class BockTCN(nn.Module):
     """
     Multi-task TCN for beat, downbeat, and tempo tracking.
 
-    Based on Davies & Böck "Temporal convolutional networks for musical
-    audio beat tracking" (EUSIPCO 2019), Table I.
+    Hybrid implementation: Davies & Böck 2019 frontend/training defaults plus
+    Böck & Davies 2020-style parallel dilations and optional task heads.
 
     Architecture:
     1. Conv frontend: 2 Conv2D blocks with MaxPool + 1 Conv2D block WITHOUT pooling
        (conv3 collapses the frequency dimension to 1 — no pooling on layer 3)
-    2. TCN with 11 dilated residual blocks
-    3. Task-specific heads for beats, downbeats, tempo
+    2. TCN with 11 residual blocks, each using base and doubled dilation
+    3. Task-specific heads for beats, optional downbeats, and optional tempo
 
     Args:
         n_filters: Number of filters per layer

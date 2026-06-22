@@ -1,4 +1,4 @@
-"""Verify BockTCN architecture matches Davies & Böck 2019 (EUSIPCO), Table I."""
+"""Verify BockTCN's Davies & Böck 2019-aligned frontend behavior."""
 import torch
 from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION
 from mir_core.models.bock_tcn.tcn import BockTCN
@@ -35,7 +35,7 @@ def test_output_shape_with_downbeats():
 
 
 def test_conv_frontend_freq_reduction():
-    """Freq dim must collapse to 1 after the three conv layers (paper path)."""
+    """Freq dim must collapse to 1 after the three 2019-style conv layers."""
     model = BockTCN(n_filters=16, n_dilations=1, include_downbeats=False)
     # Inspect intermediate shape by hooking into conv_3 output
     captured = {}
@@ -52,5 +52,5 @@ def test_conv_frontend_freq_reduction():
     # After conv_3 (1×8, valid): freq dim must be 1
     assert captured["shape"][-1] == 1, (
         f"Expected freq=1 after conv_3, got {captured['shape'][-1]}. "
-        "Check that conv layers match Davies & Böck 2019 Table I."
+        "Check that conv frontend layers match Davies & Böck 2019 Table I."
     )
