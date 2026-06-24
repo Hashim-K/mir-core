@@ -13,3 +13,6 @@ include = ["mir_core*", "mir_env*"]
 
 [tool.setuptools.package-data]
 "mir_core.checkpoints.beatnet" = ["*.pt", "*.md"]
+"mir_core.checkpoints.beatnet_plus" = ["*.pt", "*.md"]
+"mir_core.checkpoints.beast" = ["*.pt", "*.md"]
+"mir_core.checkpoints.bocktcn" = ["*.pkl", "*.md"]
