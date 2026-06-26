@@ -10,6 +10,7 @@ Classes:
     DBNDownbeatTracker     — joint beat+downbeat tracking from two activations.
     DBNBarTracker          — bar (meter) tracking from beat times + downbeat activations.
     ParticleFilterTracker  — particle filter cascade for joint beat/downbeat tracking.
+    Heydari1DStateSpaceTracker — jump-reward inference on Heydari's compact 1D state space.
 
 Convenience functions:
     detect_beats  — one-call beat detection (creates a DBNBeatTracker internally).
@@ -20,12 +21,14 @@ Convenience functions:
 from .dbn import DBNBeatTracker, DBNDownbeatTracker, DBNBarTracker
 from .particle_filter import ParticleFilterTracker
 from .peak_picking import detect_beats, detect_tempo, peak_picking
+from .state_space_1d import Heydari1DStateSpaceTracker
 
 __all__ = [
     "DBNBeatTracker",
     "DBNDownbeatTracker",
     "DBNBarTracker",
     "ParticleFilterTracker",
+    "Heydari1DStateSpaceTracker",
     "detect_beats",
     "detect_tempo",
     "peak_picking",
