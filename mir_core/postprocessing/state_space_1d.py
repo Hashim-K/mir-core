@@ -175,6 +175,10 @@ class Heydari1DStateSpaceTracker:
         downbeat_observation_lambda: str = DOWNBEAT_OBSERVATION_LAMBDA,
         offset: float = OFFSET,
         ig_threshold: float = IG_THRESHOLD,
+        min_separation_mode: str = "min_interval",
+        peak_snap_window_frames: int = 0,
+        peak_snap_mode: str = "center",
+        peak_snap_threshold: float | None = None,
     ) -> None:
         self.fps = int(fps)
         self.min_bpm = float(min_bpm)
@@ -182,6 +186,26 @@ class Heydari1DStateSpaceTracker:
         self.beats_per_bar = list(beats_per_bar or [])
         self.offset = float(offset)
         self.ig_threshold = float(ig_threshold)
+        self.min_separation_mode = str(min_separation_mode).lower()
+        if self.min_separation_mode in {"min", "fixed"}:
+            self.min_separation_mode = "min_interval"
+        elif self.min_separation_mode in {"local", "tempo", "estimated"}:
+            self.min_separation_mode = "local_tempo"
+        self.peak_snap_window_frames = int(peak_snap_window_frames)
+        self.peak_snap_mode = str(peak_snap_mode).lower()
+        if self.peak_snap_mode == "causal":
+            self.peak_snap_mode = "past"
+        self.peak_snap_threshold = (
+            None if peak_snap_threshold is None else float(peak_snap_threshold)
+        )
+        if self.min_separation_mode not in {"min_interval", "local_tempo"}:
+            raise ValueError(
+                "min_separation_mode must be 'min_interval' or 'local_tempo'."
+            )
+        if self.peak_snap_window_frames < 0:
+            raise ValueError("peak_snap_window_frames must be >= 0.")
+        if self.peak_snap_mode not in {"center", "past", "future"}:
+            raise ValueError("peak_snap_mode must be 'center', 'past', or 'future'.")
 
         min_interval = round(60.0 * self.fps / self.max_bpm)
         max_interval = round(60.0 * self.fps / self.min_bpm)
@@ -225,6 +249,7 @@ class Heydari1DStateSpaceTracker:
         down_distribution = np.ones(self.st2.num_states, dtype=float) * 0.8
         local_tempo = 0
         meter = 0
+        last_boundary_time = 0.0
 
         for frame_index, activation in enumerate(beat_activations, start=1):
             if np.max(self.st.jump_weights) > 1:
@@ -255,11 +280,44 @@ class Heydari1DStateSpaceTracker:
                 self.st.jump_weights[: self.st.min_interval - 1] = 0
                 beat_max = int(np.argmax(beat_distribution))
 
-            current_time = frame_index * frame_period + self.offset
-            last_time = output[-1][0] if output else 0.0
-            min_separation = 0.45 * frame_period * self.st.min_interval
+            boundary_time = frame_index * frame_period + self.offset
+            current_time = boundary_time
+            peak_strength = float(activation)
+            if self.peak_snap_window_frames:
+                center = start_frame + frame_index - 1
+                if self.peak_snap_mode == "past":
+                    lo = max(0, center - self.peak_snap_window_frames)
+                    hi = min(len(activations), center + 1)
+                elif self.peak_snap_mode == "future":
+                    lo = max(0, center)
+                    hi = min(len(activations), center + self.peak_snap_window_frames + 1)
+                else:
+                    lo = max(0, center - self.peak_snap_window_frames)
+                    hi = min(len(activations), center + self.peak_snap_window_frames + 1)
+                if hi > lo:
+                    local_strength = np.max(activations[lo:hi, :2], axis=1)
+                    peak_offset = int(np.argmax(local_strength))
+                    peak_strength = float(local_strength[peak_offset])
+                    current_time = (lo + peak_offset) * frame_period
+
+            if self.min_separation_mode == "local_tempo":
+                separation_interval = max(
+                    self.st.min_interval,
+                    int(np.argmax(self.st.jump_weights) + 1),
+                )
+            else:
+                separation_interval = self.st.min_interval
+            min_separation = 0.45 * frame_period * separation_interval
             near_beat_boundary = beat_max < int(0.07 / frame_period) + 1
-            if near_beat_boundary and current_time - last_time > min_separation:
+            enough_peak = (
+                self.peak_snap_threshold is None
+                or peak_strength >= self.peak_snap_threshold
+            )
+            if (
+                near_beat_boundary
+                and boundary_time - last_boundary_time > min_separation
+                and enough_peak
+            ):
                 if np.max(self.st2.jump_weights) > 1:
                     self.st2.jump_weights = 0.2 * self.st2.jump_weights / np.max(
                         self.st2.jump_weights
@@ -292,7 +350,10 @@ class Heydari1DStateSpaceTracker:
                     down_max = int(np.argmax(down_distribution))
 
                 label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
+                if output and current_time <= output[-1][0]:
+                    current_time = boundary_time
                 output.append([current_time, label, float(local_tempo), float(meter)])
+                last_boundary_time = boundary_time
 
         if not output:
             return np.empty((0, 4), dtype=float)

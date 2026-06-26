@@ -1,5 +1,4 @@
-"""
-Post-processing utilities for beat detection.
+"""Post-processing utilities for beat detection.
 
 Provides Dynamic Bayesian Network (DBN) beat trackers, particle filter
 cascade, and convenience functions for converting neural network
@@ -18,10 +17,36 @@ Convenience functions:
     peak_picking  — simple threshold + min-interval peak picking (no DBN).
 """
 
-from .dbn import DBNBeatTracker, DBNDownbeatTracker, DBNBarTracker
-from .particle_filter import ParticleFilterTracker
-from .peak_picking import detect_beats, detect_tempo, peak_picking
-from .state_space_1d import Heydari1DStateSpaceTracker
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORTS = {
+    "DBNBeatTracker": (".dbn", "DBNBeatTracker"),
+    "DBNDownbeatTracker": (".dbn", "DBNDownbeatTracker"),
+    "DBNBarTracker": (".dbn", "DBNBarTracker"),
+    "ParticleFilterTracker": (".particle_filter", "ParticleFilterTracker"),
+    "Heydari1DStateSpaceTracker": (
+        ".state_space_1d",
+        "Heydari1DStateSpaceTracker",
+    ),
+    "detect_beats": (".peak_picking", "detect_beats"),
+    "detect_tempo": (".peak_picking", "detect_tempo"),
+    "peak_picking": (".peak_picking", "peak_picking"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Load optional post-processing backends only when requested."""
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = _EXPORTS[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attribute_name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "DBNBeatTracker",

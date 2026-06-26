@@ -114,13 +114,40 @@ def get_kfold_splits(
     Returns:
         List of (train_keys, test_keys) tuples for each fold
     """
-    from sklearn.model_selection import KFold
-
     track_keys = np.array(track_keys)
-    kfold = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
+    if n_folds < 2:
+        raise ValueError("n_folds must be at least 2.")
+    if n_folds > len(track_keys):
+        raise ValueError(
+            f"Cannot have number of folds={n_folds} greater than "
+            f"the number of samples={len(track_keys)}."
+        )
 
     splits = []
-    for train_idx, test_idx in kfold.split(track_keys):
+    try:
+        from sklearn.model_selection import KFold
+
+        kfold = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
+        index_splits = kfold.split(track_keys)
+    except ImportError:
+        indices = np.arange(len(track_keys))
+        if shuffle:
+            rng = np.random.RandomState(random_state)
+            rng.shuffle(indices)
+        fold_sizes = np.full(n_folds, len(track_keys) // n_folds, dtype=int)
+        fold_sizes[: len(track_keys) % n_folds] += 1
+        current = 0
+        index_splits = []
+        for fold_size in fold_sizes:
+            start, stop = current, current + int(fold_size)
+            test_mask = np.zeros(len(track_keys), dtype=bool)
+            test_mask[indices[start:stop]] = True
+            test_idx = np.flatnonzero(test_mask)
+            train_idx = np.flatnonzero(~test_mask)
+            index_splits.append((train_idx, test_idx))
+            current = stop
+
+    for train_idx, test_idx in index_splits:
         train_keys = track_keys[train_idx].tolist()
         test_keys = track_keys[test_idx].tolist()
         splits.append((train_keys, test_keys))
