@@ -5,6 +5,8 @@ Architectures (all share the same interface):
     MelCNN              -- 3-layer CNN on 128-bin log-mel (~50K params). Primary.
     MFCCCNN             -- CNN on 60-dim MFCCs + deltas (~25K params).
     MelCNNAttention     -- MelCNN + SE channel attention (~55K params).
+    BeatNetLogSpectCNN    -- CNN on BeatNet LOG_SPECT features.
+    EmbeddingStatsMLP   -- MLP over mean/std-pooled pretrained embeddings.
     BeatNetConvClassifier -- Tiny head on BeatNet conv1 features (~5K params).
 """
 
@@ -145,6 +147,84 @@ class MelCNNAttention(nn.Module):
         return self.classifier(x)
 
 
+class BeatNetLogSpectCNN(nn.Module):
+    """Small CNN on BeatNet LOG_SPECT features.
+
+    This classifier is intended for the realtime router path where the beat
+    tracker already computes BeatNet's 272-dimensional LOG_SPECT frontend. The
+    input shape is ``(batch, 1, feature_dim, time)``, where ``feature_dim`` is
+    272 for BeatNet and 288 for BeatNet+.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 4,
+        feature_dim: int = 272,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 24, kernel_size=3, padding=1),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 2)),
+            nn.Conv2d(24, 48, kernel_size=3, padding=1),
+            nn.BatchNorm2d(48),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 2)),
+            nn.Conv2d(48, 96, kernel_size=3, padding=1),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 2)),
+        )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(96, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        return self.classifier(x)
+
+
+class EmbeddingStatsMLP(nn.Module):
+    """Classifier head for frame-level pretrained audio embeddings.
+
+    The input shape is ``(batch, 1, embedding_dim, time)``. The head computes
+    per-track mean and standard deviation over time and classifies the resulting
+    ``2 * embedding_dim`` summary. This is suitable for frozen YAMNet,
+    EfficientAT, or similar embedding extractors.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 4,
+        embedding_dim: int = 1024,
+        hidden_dim: int = 256,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.embedding_dim = int(embedding_dim)
+        self.classifier = nn.Sequential(
+            nn.Linear(self.embedding_dim * 2, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 4:
+            raise ValueError(f"Expected input shape (B, 1, F, T), got {tuple(x.shape)}.")
+        x = x.squeeze(1).transpose(1, 2)  # (B, T, F)
+        mean = x.mean(dim=1)
+        std = x.std(dim=1, unbiased=False)
+        return self.classifier(torch.cat([mean, std], dim=-1))
+
+
 class BeatNetConvClassifier(nn.Module):
     """Tiny genre classifier on BeatNet conv1 output features. ~5K params.
 
@@ -179,5 +259,7 @@ CLASSIFIER_ARCHITECTURES = {
     "mel_cnn": MelCNN,
     "mfcc_cnn": MFCCCNN,
     "mel_cnn_attention": MelCNNAttention,
+    "beatnet_log_spect_cnn": BeatNetLogSpectCNN,
+    "embedding_stats_mlp": EmbeddingStatsMLP,
     "beatnet_conv": BeatNetConvClassifier,
 }

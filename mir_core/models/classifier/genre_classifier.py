@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from .architectures import CLASSIFIER_ARCHITECTURES
 
 
-GENRE_LABELS = ["candombe", "samba", "salsa", "other"]
+GENRE_LABELS = ["candombe", "brid", "salsa", "other"]
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,8 @@ class GenreClassifier(nn.Module):
     """Factory wrapper providing a unified interface for all classifier architectures.
 
     Args:
-        arch: Architecture name (mel_cnn, mfcc_cnn, mel_cnn_attention, beatnet_conv).
+        arch: Architecture name (mel_cnn, mfcc_cnn, mel_cnn_attention,
+            beatnet_log_spect_cnn, embedding_stats_mlp, beatnet_conv).
         num_classes: Number of genre classes.
         genre_labels: List of genre label strings. Defaults to GENRE_LABELS.
         **kwargs: Forwarded to the underlying architecture constructor.
@@ -138,6 +139,31 @@ class GenreClassifier(nn.Module):
         features = np.concatenate([mfcc, delta, delta2], axis=0)  # (n_mfcc*3, time)
         tensor = torch.from_numpy(features).float().unsqueeze(0).unsqueeze(0)
         return tensor
+
+    @staticmethod
+    def preprocess_beatnet_log_spect(
+        audio: np.ndarray,
+        sr: int = 22050,
+        duration: float = 3.0,
+    ) -> torch.Tensor:
+        """Convert raw audio to BeatNet LOG_SPECT tensor for router models.
+
+        Returns:
+            Tensor of shape ``(1, 1, 272, time)`` for
+            ``beatnet_log_spect_cnn``.
+        """
+        from mir_core.preprocessing import BeatNetPreProcessor
+
+        target_len = int(sr * duration)
+        if len(audio) > target_len:
+            audio = audio[:target_len]
+        elif len(audio) < target_len:
+            audio = np.pad(audio, (0, target_len - len(audio)))
+
+        preprocessor = BeatNetPreProcessor(sample_rate=sr)
+        features = preprocessor(audio, sr=sr)
+        features = np.asarray(features, dtype=np.float32).T
+        return torch.from_numpy(features).float().unsqueeze(0).unsqueeze(0)
 
 
 # ---------------------------------------------------------------------------
