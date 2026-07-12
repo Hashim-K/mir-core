@@ -51,3 +51,31 @@ def test_heydari_1d_state_space_tracker_supports_peak_snap_options() -> None:
     assert decoded.shape[1] == 4
     assert decoded.shape[0] > 0
     assert np.all(np.diff(decoded[:, 0]) > 0)
+
+
+def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
+    fps = 50
+    activations = np.zeros((500, 2), dtype=np.float32)
+    for frame in range(200, 500, 25):
+        activations[frame, 0] = 0.95
+
+    tracker = Heydari1DStateSpaceTracker(
+        fps=fps,
+        peak_snap_window_frames=4,
+        peak_snap_mode="future",
+    )
+    decoded, emission_frames, frame_seconds = tracker.process_with_emission_frames(
+        activations
+    )
+
+    assert len(decoded) == len(emission_frames)
+    assert frame_seconds.shape == (len(activations),)
+    assert np.all(frame_seconds >= 0.0)
+    event_frames = np.rint(decoded[:, 0] * fps).astype(int)
+    assert np.all(emission_frames >= event_frames)
+
+    decoded, source_frames, emission_frames, _ = tracker.process_with_event_timing(
+        activations
+    )
+    assert len(decoded) == len(source_frames) == len(emission_frames)
+    assert np.all(emission_frames >= source_frames)

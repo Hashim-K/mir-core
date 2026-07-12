@@ -6,6 +6,7 @@ Adapted from Mojtaba Heydari's MIT-licensed ``jump_reward_inference`` package:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -227,22 +228,58 @@ class Heydari1DStateSpaceTracker:
         return self.process(activations)
 
     def process(self, activations: np.ndarray) -> np.ndarray:
+        decoded, _, _ = self.process_with_emission_frames(activations)
+        return decoded
+
+    def process_with_emission_frames(
+        self,
+        activations: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Decode activations and expose causal emission frames and frame costs.
+
+        Emission frames identify when each returned event became available to
+        the caller. They can differ from event timestamps when peak snapping
+        moves an event to an earlier activation peak.
+        """
+        decoded, _, emission_frames, frame_seconds = self.process_with_event_timing(
+            activations
+        )
+        return decoded, emission_frames, frame_seconds
+
+    def process_with_event_timing(
+        self,
+        activations: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Decode events with source-activation and callback-emission frames."""
         activations = np.asarray(activations, dtype=float)
         if activations.ndim != 2 or activations.shape[1] < 2:
             raise ValueError("Heydari1DStateSpaceTracker expects activations with shape (frames, 2).")
         if activations.size == 0:
-            return np.empty((0, 4), dtype=float)
+            return (
+                np.empty((0, 4), dtype=float),
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=float),
+            )
 
         frame_period = 1.0 / self.fps
         start_frame = int(self.offset / frame_period)
         if start_frame >= len(activations):
-            return np.empty((0, 4), dtype=float)
+            return (
+                np.empty((0, 4), dtype=float),
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=np.int64),
+                np.zeros(len(activations), dtype=float),
+            )
 
         both_activations = activations[start_frame:, :2].copy()
         beat_activations = np.max(both_activations, axis=1)
         beat_activations[beat_activations < self.ig_threshold] = 0.03
 
         output: list[list[float]] = []
+        source_frames: list[int] = []
+        emission_frames: list[int] = []
+        frame_seconds = np.zeros(len(activations), dtype=float)
         beat_distribution = np.ones(self.st.num_states, dtype=float) * 0.8
         if len(beat_distribution) > 5:
             beat_distribution[5] = 1.0
@@ -252,6 +289,8 @@ class Heydari1DStateSpaceTracker:
         last_boundary_time = 0.0
 
         for frame_index, activation in enumerate(beat_activations, start=1):
+            frame_started = time.perf_counter()
+            source_frame_index = start_frame + frame_index - 1
             if np.max(self.st.jump_weights) > 1:
                 self.st.jump_weights = 0.7 * self.st.jump_weights / np.max(self.st.jump_weights)
             beat_weight = self.st.jump_weights.copy()
@@ -282,6 +321,8 @@ class Heydari1DStateSpaceTracker:
 
             boundary_time = frame_index * frame_period + self.offset
             current_time = boundary_time
+            event_source_frame_index = source_frame_index
+            emission_frame_index = source_frame_index
             peak_strength = float(activation)
             if self.peak_snap_window_frames:
                 center = start_frame + frame_index - 1
@@ -299,6 +340,9 @@ class Heydari1DStateSpaceTracker:
                     peak_offset = int(np.argmax(local_strength))
                     peak_strength = float(local_strength[peak_offset])
                     current_time = (lo + peak_offset) * frame_period
+                    event_source_frame_index = lo + peak_offset
+                    if self.peak_snap_mode in {"center", "future"}:
+                        emission_frame_index = max(emission_frame_index, hi - 1)
 
             if self.min_separation_mode == "local_tempo":
                 separation_interval = max(
@@ -352,9 +396,20 @@ class Heydari1DStateSpaceTracker:
                 label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
                 if output and current_time <= output[-1][0]:
                     current_time = boundary_time
+                    event_source_frame_index = source_frame_index
                 output.append([current_time, label, float(local_tempo), float(meter)])
+                source_frames.append(event_source_frame_index)
+                emission_frames.append(emission_frame_index)
                 last_boundary_time = boundary_time
+            frame_seconds[source_frame_index] = time.perf_counter() - frame_started
 
         if not output:
-            return np.empty((0, 4), dtype=float)
-        return np.asarray(output, dtype=float)
+            decoded = np.empty((0, 4), dtype=float)
+        else:
+            decoded = np.asarray(output, dtype=float)
+        return (
+            decoded,
+            np.asarray(source_frames, dtype=np.int64),
+            np.asarray(emission_frames, dtype=np.int64),
+            frame_seconds,
+        )
