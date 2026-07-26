@@ -32,10 +32,10 @@ TASK_PREFIX = "btk"
 class Preset:
     key: str          # human identifier, e.g. "rapini2024_salsaset_beatnet"
     hash: str         # experiment_hash(config) — equals the JSON filename stem
-    category: str     # experiment type, e.g. "training", "adapting"
     citation: str     # full citation string
     config: dict[str, Any]  # complete config (unexpanded env vars)
     notes: list[str]  # discrepancy notes and caveats
+    category: str = "training"  # experiment type, e.g. "training", "adapting"
 
 
 def load_presets() -> dict[str, Preset]:

@@ -162,7 +162,7 @@ class ParticleFilterTracker:
 
     def __init__(
         self,
-        fps: int = 50,
+        fps: float = 50.0,
         min_bpm: float = MIN_BPM,
         max_bpm: float = MAX_BPM,
         beats_per_bar=None,
