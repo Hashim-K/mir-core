@@ -13,14 +13,19 @@ Configs must NOT have env vars expanded before hashing.
 Each file in `presets/` is a self-contained canonical experiment definition.
 The **filename stem is the experiment hash** (e.g. `btk-a14aef639058a4c7.json`).
 
+These presets reproduce historical paper-specific dataset universes and carry
+`data.allow_legacy_split: true` explicitly. New multi-lab thesis experiments
+must use the universal `data.split_plan` runtime in `mir-train-hpc`; the opt-in
+prevents a paper preset from silently being mistaken for that shared protocol.
+
 ### Available presets
 
 | Hash | Key | Paper |
 |------|-----|-------|
-| `btk-9317e3e7ccce1bb4` | `rapini2024_salsaset_beatnet` | Rapini & Jordanous 2024 (LAMIR) |
-| `btk-4a4e9f89b8cecf4a` | `rapini2024_salsaset_bocktcn` | Rapini & Jordanous 2024 (LAMIR) |
-| `btk-f7da34c142f89a6e` | `heydari2021_beatnet` | Heydari et al. 2021 (ISMIR) |
-| `btk-cfc18d212ee5091e` | `davies2019_bocktcn` | Davies & Böck 2019 (EUSIPCO) |
+| `btk-724a5e4d0d1e8edf` | `rapini2024_salsaset_beatnet` | Rapini & Jordanous 2024 (LAMIR) |
+| `btk-68a1f54a14e999c9` | `rapini2024_salsaset_bocktcn` | Rapini & Jordanous 2024 (LAMIR) |
+| `btk-65bd103f0edc1432` | `heydari2021_beatnet` | Heydari et al. 2021 (ISMIR) |
+| `btk-6e688b9bba34efba` | `davies2019_bocktcn` | Davies & Böck 2019 (EUSIPCO) |
 
 Run `python -c "from mir_core.beats.experiments import PRESETS_BY_KEY; print(list(PRESETS_BY_KEY))"` to list current keys.
 
@@ -32,7 +37,7 @@ from mir_core.beats.experiments import (
 )
 
 preset = get_by_key("rapini2024_salsaset_beatnet")
-preset.hash        # "btk-a14aef639058a4c7"
+preset.hash        # "btk-724a5e4d0d1e8edf"
 preset.citation    # full citation string
 preset.config      # complete config dict (unexpanded)
 preset.notes       # list of discrepancy / methodology notes
