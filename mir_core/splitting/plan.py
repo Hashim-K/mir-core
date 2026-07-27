@@ -679,11 +679,13 @@ def _select_validation_groups(
     selected: list[_Group] = []
     selected_size = 0
     selected_strata: Counter[str] = Counter()
-    dataset_group_counts: Counter[str] = Counter(
+    remaining_dataset_group_counts: Counter[str] = Counter(
         dataset_id for group in groups for dataset_id in group.dataset_ids
     )
     insufficient = sorted(
-        dataset_id for dataset_id, count in dataset_group_counts.items() if count < 2
+        dataset_id
+        for dataset_id, count in remaining_dataset_group_counts.items()
+        if count < 2
     )
     if insufficient:
         raise ValueError(
@@ -702,17 +704,19 @@ def _select_validation_groups(
         return result
 
     def can_select(group: _Group) -> bool:
-        selected_ids = {item.group_id for item in selected}
         return all(
-            sum(
-                dataset_id in item.dataset_ids
-                and item.group_id not in selected_ids
-                and item.group_id != group.group_id
-                for item in groups
-            )
-            >= 1
+            remaining_dataset_group_counts[dataset_id] > 1
             for dataset_id in group.dataset_ids
         )
+
+    def mark_selected(group: _Group) -> None:
+        nonlocal selected_size
+        selected.append(group)
+        remaining.remove(group)
+        selected_size += group.size
+        selected_strata.update(group.balance_counts)
+        for dataset_id in group.dataset_ids:
+            remaining_dataset_group_counts[dataset_id] -= 1
 
     def candidate_key(group: _Group) -> tuple[Any, ...]:
         return (
@@ -730,7 +734,7 @@ def _select_validation_groups(
             group.group_id,
         )
 
-    for dataset_id in sorted(dataset_group_counts):
+    for dataset_id in sorted(remaining_dataset_group_counts):
         if any(dataset_id in group.dataset_ids for group in selected):
             continue
         candidates = [
@@ -744,10 +748,7 @@ def _select_validation_groups(
                 f"dataset {dataset_id!r} while retaining training data."
             )
         chosen = min(candidates, key=candidate_key)
-        selected.append(chosen)
-        remaining.remove(chosen)
-        selected_size += chosen.size
-        selected_strata.update(chosen.balance_counts)
+        mark_selected(chosen)
 
     current_distance = distance(selected_size, selected_strata)
     while remaining:
@@ -761,10 +762,7 @@ def _select_validation_groups(
         )
         if candidate_distance >= current_distance:
             break
-        selected.append(best)
-        remaining.remove(best)
-        selected_size += best.size
-        selected_strata.update(best.balance_counts)
+        mark_selected(best)
         current_distance = candidate_distance
     return tuple(selected)
 
