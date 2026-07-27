@@ -11,6 +11,7 @@ mir_core/
   preprocessing/ — audio preprocessing pipeline
   evaluation/    — evaluation metrics and reporting
   datasets/      — dataset loader adapters and metadata interfaces
+  splitting/     — deterministic, group-aware cross-dataset split plans
   export/        — checkpoint loading and export helpers
 mir_env/
   verify_installation.py — environment sanity check
@@ -27,6 +28,34 @@ pip install -e .
 ```python
 import mir_core
 ```
+
+### Shared split plans
+
+`mir_core.splitting` is the task- and audio-profile-independent split engine:
+
+```python
+from mir_core.splitting import SplitRecord, build_split_plan
+
+plan = build_split_plan(
+    [
+        SplitRecord(
+            uid="dataset:001",
+            dataset_id="dataset",
+            group_id="artist:example",
+            strata=(("label", "example"),),
+        ),
+        # Supply the complete canonical experiment universe.
+    ],
+    seed=42,
+    n_folds=5,
+    validation_fraction=0.1,
+)
+```
+
+It assigns whole leakage groups to train, validation, and test for every fold,
+validates global group isolation, and exposes canonical JSON serialization plus
+self-verifying record, membership, and plan hashes. Dataset-specific manifest
+adapters and post-split policies belong in the consuming repository.
  
 ## Rules
  
