@@ -17,17 +17,24 @@ Example usage:
     model = load_model("beatnet-brid-ft", device="cuda")
 """
 
+from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import pickle
+import re
 import torch
 import torch.nn as nn
+
+from mir_core.utils.hashing import stable_digest
 
 
 class ModelType(str, Enum):
     """Supported model architectures."""
+
     BOCKTCN = "bocktcn"
     BEATNET = "beatnet"
     BEAST = "beast"
@@ -36,26 +43,29 @@ class ModelType(str, Enum):
 
 class TrainingMethod(str, Enum):
     """Training/adaptation method."""
+
     PRETRAINED = "pretrained"  # Original pretrained weights
-    FINE_TUNING = "ft"         # Fine-tuned on target genre
-    GENRE_ONLY = "genre"       # Trained on genre from scratch
-    INCREMENTAL = "incr"       # Incrementally trained with N files
+    FINE_TUNING = "ft"  # Fine-tuned on target genre
+    GENRE_ONLY = "genre"  # Trained on genre from scratch
+    INCREMENTAL = "incr"  # Incrementally trained with N files
 
 
 @dataclass
 class ModelSpec:
     """Specification for a registered model."""
-    name: str                          # Short name (e.g., "bocktcn-candombe-ft")
-    display_name: str                  # Human readable name
-    model_type: ModelType              # Architecture type
-    training_method: TrainingMethod    # How it was trained
-    genre: Optional[str] = None        # Target genre (candombe, brid, salsa, etc.)
+
+    name: str  # Short name (e.g., "bocktcn-candombe-ft")
+    display_name: str  # Human readable name
+    model_type: ModelType  # Architecture type
+    training_method: TrainingMethod  # How it was trained
+    genre: Optional[str] = None  # Target genre (candombe, brid, salsa, etc.)
     checkpoint_path: Optional[str] = None  # Path to checkpoint
-    description: str = ""              # Model description
+    description: str = ""  # Model description
     metrics: Dict[str, float] = field(default_factory=dict)  # Performance metrics
     model_kwargs: Dict[str, Any] = field(default_factory=dict)  # Model init args
-    n_files: Optional[int] = None      # For incremental: number of training files
-    fold: Optional[int] = None         # For CV: fold number
+    n_files: Optional[int] = None  # For incremental: number of training files
+    fold: Optional[int] = None  # For CV: fold number
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Checkpoint provenance
 
     def __post_init__(self):
         # Auto-generate name if not provided
@@ -97,8 +107,17 @@ class ModelRegistry:
         self.register(spec)
 
     def get(self, name: str) -> Optional[ModelSpec]:
-        """Get a model specification by name."""
-        return self._models.get(name)
+        """Get a model by canonical name or an unambiguous legacy alias."""
+
+        direct = self._models.get(name)
+        if direct is not None:
+            return direct
+        alias_matches = [
+            spec
+            for spec in self._models.values()
+            if spec.metadata.get("legacy_alias") == name
+        ]
+        return alias_matches[0] if len(alias_matches) == 1 else None
 
     def list_models(
         self,
@@ -174,44 +193,275 @@ def _get_default_checkpoints_path() -> Path:
     return pkg_root / "weights"
 
 
+def _safe_load_checkpoint_metadata(path: Path) -> Dict[str, Any]:
+    """Load tensor/basic metadata without allowing discovery failures to escape."""
+
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        EOFError,
+        pickle.UnpicklingError,
+    ):
+        return {}
+    return checkpoint if isinstance(checkpoint, dict) else {}
+
+
+def _classifier_kwargs_from_checkpoint(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate the classifier trainer's checkpoint metadata into model kwargs."""
+
+    model_config = checkpoint.get("model_config", {})
+    kwargs = dict(model_config) if isinstance(model_config, dict) else {}
+    kwargs.pop("name", None)
+    kwargs.pop("num_classes", None)
+    kwargs.pop("genre_labels", None)
+    config_arch = kwargs.pop("arch", None)
+    arch = checkpoint.get("arch") or config_arch
+    if isinstance(arch, str) and arch:
+        kwargs["arch"] = arch
+    labels = checkpoint.get("labels")
+    if (
+        isinstance(labels, (list, tuple))
+        and labels
+        and all(isinstance(label, str) and label for label in labels)
+    ):
+        kwargs["genre_labels"] = list(labels)
+        kwargs["num_classes"] = len(labels)
+    calibration_temperature = _classifier_calibration_temperature(checkpoint)
+    if calibration_temperature is not None:
+        kwargs["calibration_temperature"] = calibration_temperature
+    return kwargs
+
+
+def _mapping_copy(value: Any) -> Dict[str, Any]:
+    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+
+
+def _metadata_scalar(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value.get("value")
+    return value
+
+
+def _classifier_calibration_temperature(
+    checkpoint: Mapping[str, Any],
+) -> Any | None:
+    calibration = checkpoint.get("calibration")
+    if isinstance(calibration, Mapping) and calibration.get("temperature") is not None:
+        temperature = _metadata_scalar(calibration["temperature"])
+        if temperature is not None:
+            return temperature
+    router_config = checkpoint.get("router_config")
+    if (
+        isinstance(router_config, Mapping)
+        and router_config.get("temperature") is not None
+    ):
+        return _metadata_scalar(router_config["temperature"])
+    return None
+
+
+def _classifier_routing_metadata(
+    checkpoint: Mapping[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return rich calibration provenance and router configuration."""
+
+    calibration = _mapping_copy(checkpoint.get("calibration"))
+    router_config = _mapping_copy(checkpoint.get("router_config"))
+    if (
+        "temperature" not in calibration
+        and router_config.get("temperature") is not None
+    ):
+        calibration["temperature"] = deepcopy(router_config["temperature"])
+    if (
+        "confidence_threshold" not in calibration
+        and router_config.get("confidence_threshold") is not None
+    ):
+        calibration["confidence_threshold"] = deepcopy(
+            router_config["confidence_threshold"]
+        )
+    return calibration, router_config
+
+
+def _fold_from_classifier_checkpoint(
+    checkpoint: Dict[str, Any],
+    relative_path: Path,
+) -> Optional[int]:
+    split_contract = checkpoint.get("split_contract")
+    if isinstance(split_contract, dict):
+        fold = split_contract.get("fold_index")
+        if isinstance(fold, int) and not isinstance(fold, bool) and fold >= 0:
+            return fold
+    for part in relative_path.parts:
+        match = re.fullmatch(r"fold[-_]?(\d+)", part, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _model_name_component(value: Any) -> str:
+    component = re.sub(r"[^a-z0-9_]+", "-", str(value).strip().lower())
+    return component.strip("-_")
+
+
+def _classifier_discovery_names(
+    *,
+    arch: str,
+    checkpoint: Mapping[str, Any],
+    fold: Optional[int],
+    relative_path: Path,
+) -> tuple[str, str]:
+    """Return collision-resistant canonical name and the old short alias."""
+
+    legacy_parts = ["genre_classifier", arch]
+    if fold is not None:
+        legacy_parts.append(f"f{fold}")
+    legacy_name = "-".join(legacy_parts)
+
+    canonical_parts = ["genre_classifier", _model_name_component(arch)]
+    feature_config = checkpoint.get("feature_config")
+    feature_type = (
+        feature_config.get("type") if isinstance(feature_config, Mapping) else None
+    )
+    if feature_type:
+        feature_component = _model_name_component(feature_type)
+        if feature_component:
+            canonical_parts.append(feature_component)
+    experiment_hash = checkpoint.get("experiment_hash")
+    if experiment_hash:
+        experiment_component = _model_name_component(experiment_hash)
+        if experiment_component:
+            canonical_parts.append(experiment_component)
+        else:
+            canonical_parts.append(
+                f"ckpt-{stable_digest(relative_path.as_posix(), length=8)}"
+            )
+    else:
+        canonical_parts.append(
+            f"ckpt-{stable_digest(relative_path.as_posix(), length=8)}"
+        )
+    if fold is not None:
+        canonical_parts.append(f"f{fold}")
+    return "-".join(canonical_parts), legacy_name
+
+
+def _unique_classifier_name(name: str, checkpoint_path: Path) -> str:
+    existing = _registry._models.get(name)
+    if existing is None:
+        return name
+    if (
+        existing.checkpoint_path is not None
+        and Path(existing.checkpoint_path).resolve() == checkpoint_path.resolve()
+    ):
+        return name
+    path_suffix = stable_digest(str(checkpoint_path.resolve()), length=8)
+    candidate = f"{name}-p{path_suffix}"
+    counter = 2
+    while candidate in _registry._models:
+        candidate = f"{name}-p{path_suffix}-{counter}"
+        counter += 1
+    return candidate
+
+
 def _discover_genre_classifiers(base_path: Path) -> None:
-    """Discover genre classifier checkpoints.
+    """Discover legacy and current classifier-training checkpoints.
 
-    Expected structure: {base_path}/{arch}/fold{n}/best-*.ckpt
+    Supported structures include ``{arch}/fold{n}/best-*.ckpt`` and the
+    classifier trainer's ``.../fold{n}/checkpoints/best.pt``. Trainer metadata
+    is used to reconstruct architecture kwargs and genre labels.
     """
-    for arch_dir in base_path.iterdir():
-        if not arch_dir.is_dir():
-            continue
-        arch = arch_dir.name  # e.g. mel_cnn
-        for fold_dir in arch_dir.iterdir():
-            if not fold_dir.is_dir():
+
+    if not base_path.is_dir():
+        return
+    checkpoints = set(base_path.rglob("best-*.ckpt"))
+    checkpoints.update(
+        path for path in base_path.rglob("best.pt") if path.parent.name == "checkpoints"
+    )
+    if base_path.name == "checkpoints" and (base_path / "best.pt").is_file():
+        checkpoints.add(base_path / "best.pt")
+    for ckpt in sorted(checkpoints):
+        relative_path = ckpt.relative_to(base_path)
+        checkpoint = _safe_load_checkpoint_metadata(ckpt)
+        model_kwargs = _classifier_kwargs_from_checkpoint(checkpoint)
+        arch = model_kwargs.get("arch")
+        if not isinstance(arch, str) or not arch:
+            # Legacy layout: the first directory below base_path names the arch.
+            arch = relative_path.parts[0] if len(relative_path.parts) > 1 else None
+            if not arch:
                 continue
-            for ckpt in fold_dir.glob("best-*.ckpt"):
-                fold_name = fold_dir.name  # e.g. fold0
-                fold = None
-                if fold_name.startswith("fold"):
-                    try:
-                        fold = int(fold_name.replace("fold", ""))
-                    except ValueError:
-                        pass
+            model_kwargs["arch"] = arch
+        fold = _fold_from_classifier_checkpoint(checkpoint, relative_path)
 
-                name_parts = ["genre_classifier", arch]
-                if fold is not None:
-                    name_parts.append(f"f{fold}")
-                name = "-".join(name_parts)
+        name, legacy_alias = _classifier_discovery_names(
+            arch=arch,
+            checkpoint=checkpoint,
+            fold=fold,
+            relative_path=relative_path,
+        )
+        name = _unique_classifier_name(name, ckpt)
+        existing = _registry._models.get(name)
+        if existing is not None and existing.checkpoint_path == str(ckpt):
+            continue
 
-                if _registry.get(name):
-                    continue
-
-                _registry.register(ModelSpec(
-                    name=name,
-                    display_name=f"Genre Classifier ({arch}) fold{fold}",
-                    model_type=ModelType.GENRE_CLASSIFIER,
-                    training_method=TrainingMethod.FINE_TUNING,
-                    checkpoint_path=str(ckpt),
-                    fold=fold,
-                    model_kwargs={"arch": arch},
-                ))
+        calibrated_metrics = checkpoint.get("validation_metrics_calibrated")
+        if isinstance(calibrated_metrics, Mapping):
+            validation_metrics = calibrated_metrics
+            validation_metrics_source = "validation_metrics_calibrated"
+        else:
+            validation_metrics = checkpoint.get("validation_metrics", {})
+            validation_metrics_source = "validation_metrics"
+        metrics = (
+            {
+                str(key): float(value)
+                for key, value in validation_metrics.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            if isinstance(validation_metrics, Mapping)
+            else {}
+        )
+        calibration_metadata, router_config = _classifier_routing_metadata(checkpoint)
+        selection_metadata = {
+            key: deepcopy(checkpoint[key])
+            for key in ("epoch", "best_metric", "best_value")
+            if checkpoint.get(key) is not None
+        }
+        if isinstance(checkpoint.get("validation_metrics"), Mapping):
+            selection_metadata["validation_metrics"] = deepcopy(
+                dict(checkpoint["validation_metrics"])
+            )
+        fold_suffix = f" fold{fold}" if fold is not None else ""
+        _registry.register(
+            ModelSpec(
+                name=name,
+                display_name=f"Genre Classifier ({arch}){fold_suffix}",
+                model_type=ModelType.GENRE_CLASSIFIER,
+                training_method=TrainingMethod.FINE_TUNING,
+                checkpoint_path=str(ckpt),
+                description=(
+                    f"Classifier experiment {checkpoint['experiment_hash']}"
+                    if checkpoint.get("experiment_hash")
+                    else ""
+                ),
+                metrics=metrics,
+                metadata={
+                    "calibration": calibration_metadata,
+                    "experiment_hash": checkpoint.get("experiment_hash"),
+                    "feature_type": (
+                        checkpoint.get("feature_config", {}).get("type")
+                        if isinstance(checkpoint.get("feature_config"), Mapping)
+                        else None
+                    ),
+                    "legacy_alias": legacy_alias,
+                    "router_config": router_config,
+                    "selection": selection_metadata,
+                    "validation_metrics_source": validation_metrics_source,
+                },
+                fold=fold,
+                model_kwargs=model_kwargs,
+            )
+        )
 
 
 def _auto_discover_checkpoints() -> None:
@@ -223,25 +473,29 @@ def _auto_discover_checkpoints() -> None:
     if weights_path.exists():
         bocktcn_ckpt = weights_path / "bocktcn.ckpt"
         if bocktcn_ckpt.exists():
-            _registry.register(ModelSpec(
-                name="bocktcn-pretrained",
-                display_name="BockTCN (Pretrained)",
-                model_type=ModelType.BOCKTCN,
-                training_method=TrainingMethod.PRETRAINED,
-                checkpoint_path=str(bocktcn_ckpt),
-                description="Original BockTCN trained on GTZAN",
-            ))
+            _registry.register(
+                ModelSpec(
+                    name="bocktcn-pretrained",
+                    display_name="BockTCN (Pretrained)",
+                    model_type=ModelType.BOCKTCN,
+                    training_method=TrainingMethod.PRETRAINED,
+                    checkpoint_path=str(bocktcn_ckpt),
+                    description="Original BockTCN trained on GTZAN",
+                )
+            )
 
         tcn_lamir = weights_path / "tcn_lamir_pretrained.ckpt"
         if tcn_lamir.exists():
-            _registry.register(ModelSpec(
-                name="bocktcn-lamir-pretrained",
-                display_name="BockTCN LAMIR (Pretrained)",
-                model_type=ModelType.BOCKTCN,
-                training_method=TrainingMethod.PRETRAINED,
-                checkpoint_path=str(tcn_lamir),
-                description="BockTCN pretrained on Latin American music",
-            ))
+            _registry.register(
+                ModelSpec(
+                    name="bocktcn-lamir-pretrained",
+                    display_name="BockTCN LAMIR (Pretrained)",
+                    model_type=ModelType.BOCKTCN,
+                    training_method=TrainingMethod.PRETRAINED,
+                    checkpoint_path=str(tcn_lamir),
+                    description="BockTCN pretrained on Latin American music",
+                )
+            )
 
     # Auto-discover fine-tuned models from checkpoints
     if checkpoints_path.exists():
@@ -308,24 +562,30 @@ def _auto_discover_checkpoints() -> None:
             if _registry.get(short_name):
                 continue
 
-            _registry.register(ModelSpec(
-                name=short_name,
-                display_name=f"{model_type.value.upper()} {genre or ''} {method.value}",
-                model_type=model_type,
-                training_method=method,
-                genre=genre,
-                checkpoint_path=str(ckpt),
-                n_files=n_files,
-                fold=fold,
-            ))
+            _registry.register(
+                ModelSpec(
+                    name=short_name,
+                    display_name=f"{model_type.value.upper()} {genre or ''} {method.value}",
+                    model_type=model_type,
+                    training_method=method,
+                    genre=genre,
+                    checkpoint_path=str(ckpt),
+                    n_files=n_files,
+                    fold=fold,
+                )
+            )
 
     # Discover genre classifier checkpoints
-    genre_clf_path = checkpoints_path / "genre_classifier" if checkpoints_path.exists() else None
+    genre_clf_path = (
+        checkpoints_path / "genre_classifier" if checkpoints_path.exists() else None
+    )
     if genre_clf_path and genre_clf_path.exists():
         _discover_genre_classifiers(genre_clf_path)
 
     # Also look in results/genre_classifier/checkpoints
-    results_clf = _get_package_root().parent / "results" / "genre_classifier" / "checkpoints"
+    results_clf = (
+        _get_package_root().parent / "results" / "genre_classifier" / "checkpoints"
+    )
     if results_clf.exists():
         _discover_genre_classifiers(results_clf)
 
@@ -418,28 +678,32 @@ def _discover_from_outputs_structure(outputs_path: Path) -> None:
                     if meta_file.exists():
                         try:
                             import json
+
                             with open(meta_file) as f:
                                 meta = json.load(f)
                             metrics = meta.get("metrics", {})
                         except Exception:
                             pass
 
-                    _registry.register(ModelSpec(
-                        name=name,
-                        display_name=f"{model_type.value.upper()} {genre} {method.value}",
-                        model_type=model_type,
-                        training_method=method,
-                        genre=genre,
-                        checkpoint_path=str(ckpt),
-                        n_files=n_files,
-                        fold=fold,
-                        metrics=metrics,
-                    ))
+                    _registry.register(
+                        ModelSpec(
+                            name=name,
+                            display_name=f"{model_type.value.upper()} {genre} {method.value}",
+                            model_type=model_type,
+                            training_method=method,
+                            genre=genre,
+                            checkpoint_path=str(ckpt),
+                            n_files=n_files,
+                            fold=fold,
+                            metrics=metrics,
+                        )
+                    )
 
 
 # =============================================================================
 # Public API
 # =============================================================================
+
 
 def load_model(
     name: str,
@@ -479,7 +743,8 @@ def load_model(
         available = _registry.list_names()
         raise ValueError(
             f"Model '{name}' not found. Available models: {available[:10]}..."
-            if len(available) > 10 else f"Model '{name}' not found. Available models: {available}"
+            if len(available) > 10
+            else f"Model '{name}' not found. Available models: {available}"
         )
 
     # Get model class
@@ -487,32 +752,47 @@ def load_model(
     if not model_class:
         raise ValueError(f"Unknown model type: {spec.model_type}")
 
-    # Merge kwargs
-    kwargs = {**spec.model_kwargs, **model_kwargs}
-
-    # Instantiate model
-    model = model_class(**kwargs)
-
-    # Load checkpoint if available
+    checkpoint = None
     if spec.checkpoint_path:
         ckpt_path = _registry.resolve_path(spec)
         if ckpt_path.exists():
             checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-
-            # Handle different checkpoint formats
-            if "state_dict" in checkpoint:
-                state_dict = checkpoint["state_dict"]
-                # Remove 'model.' prefix if present
-                state_dict = {
-                    k.replace("model.", ""): v
-                    for k, v in state_dict.items()
-                }
-            else:
-                state_dict = checkpoint
-
-            model.load_state_dict(state_dict, strict=strict)
         else:
             print(f"Warning: Checkpoint not found: {ckpt_path}")
+
+    # Current classifier checkpoints carry the exact constructor contract.
+    checkpoint_kwargs: Dict[str, Any] = {}
+    if spec.model_type == ModelType.GENRE_CLASSIFIER and isinstance(checkpoint, dict):
+        checkpoint_kwargs = _classifier_kwargs_from_checkpoint(checkpoint)
+
+    # Explicit call kwargs override registry metadata, which overrides checkpoint
+    # metadata inferred during loading.
+    kwargs = {**checkpoint_kwargs, **spec.model_kwargs, **model_kwargs}
+    model = model_class(**kwargs)
+    if spec.model_type == ModelType.GENRE_CLASSIFIER and isinstance(checkpoint, dict):
+        calibration_metadata, router_config = _classifier_routing_metadata(checkpoint)
+        model.set_routing_metadata(
+            calibration=calibration_metadata,
+            router_config=router_config,
+        )
+
+    if checkpoint is not None:
+        if not isinstance(checkpoint, dict):
+            raise ValueError(f"Unsupported checkpoint format for model: {name}")
+        if "model_state_dict" in checkpoint:
+            # Native classifier trainer format; keys already target the wrapper.
+            state_dict = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            # Lightning modules commonly wrap the exported network as ``model``.
+            state_dict = {
+                key.removeprefix("model."): value for key, value in state_dict.items()
+            }
+        else:
+            state_dict = checkpoint
+        if not isinstance(state_dict, dict):
+            raise ValueError(f"Checkpoint state for model {name!r} is not a mapping.")
+        model.load_state_dict(state_dict, strict=strict)
 
     model = model.to(device)
     model.eval()
@@ -643,6 +923,7 @@ def save_registry(path: Union[str, Path]) -> None:
             "description": spec.description,
             "metrics": spec.metrics,
             "model_kwargs": spec.model_kwargs,
+            "metadata": spec.metadata,
             "n_files": spec.n_files,
             "fold": spec.fold,
         }

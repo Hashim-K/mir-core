@@ -5,6 +5,8 @@ Provides a unified interface for all classifier architectures, plus a
 GenreRouter that combines activations from genre-adapted beat trackers.
 """
 
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Dict, List, Optional
 import numpy as np
 import torch
@@ -13,13 +15,13 @@ import torch.nn.functional as F
 
 from .architectures import CLASSIFIER_ARCHITECTURES
 
-
 GENRE_LABELS = ["candombe", "brid", "salsa", "other"]
 
 
 # ---------------------------------------------------------------------------
 # GenreClassifier -- unified factory + inference interface
 # ---------------------------------------------------------------------------
+
 
 class GenreClassifier(nn.Module):
     """Factory wrapper providing a unified interface for all classifier architectures.
@@ -29,6 +31,8 @@ class GenreClassifier(nn.Module):
             beatnet_log_spect_cnn, embedding_stats_mlp, beatnet_conv).
         num_classes: Number of genre classes.
         genre_labels: List of genre label strings. Defaults to GENRE_LABELS.
+        calibration_temperature: Positive temperature applied by :meth:`predict`.
+            :meth:`forward` always returns unscaled logits.
         **kwargs: Forwarded to the underlying architecture constructor.
     """
 
@@ -37,6 +41,7 @@ class GenreClassifier(nn.Module):
         arch: str = "mel_cnn",
         num_classes: int = 4,
         genre_labels: Optional[List[str]] = None,
+        calibration_temperature: float = 1.0,
         **kwargs,
     ):
         super().__init__()
@@ -45,9 +50,81 @@ class GenreClassifier(nn.Module):
                 f"Unknown architecture '{arch}'. "
                 f"Choose from: {list(CLASSIFIER_ARCHITECTURES.keys())}"
             )
+        if isinstance(num_classes, bool) or int(num_classes) != num_classes:
+            raise ValueError("num_classes must be a positive integer.")
+        num_classes = int(num_classes)
+        if num_classes <= 0:
+            raise ValueError("num_classes must be a positive integer.")
+        labels = (
+            GENRE_LABELS[:num_classes] if genre_labels is None else list(genre_labels)
+        )
+        if len(labels) != num_classes:
+            raise ValueError(
+                "genre_labels must contain exactly num_classes entries "
+                f"({len(labels)} != {num_classes})."
+            )
+        if any(not isinstance(label, str) or not label for label in labels):
+            raise ValueError("genre_labels must contain non-empty strings.")
+        if len(set(labels)) != len(labels):
+            raise ValueError("genre_labels must be unique.")
         self.arch_name = arch
-        self.genre_labels = genre_labels or GENRE_LABELS[:num_classes]
+        self.genre_labels = labels
+        self._calibration_temperature = 1.0
+        self.calibration_temperature = calibration_temperature
+        self._calibration_metadata: dict[str, object] = {}
+        self._router_config: dict[str, object] = {}
         self.model = CLASSIFIER_ARCHITECTURES[arch](num_classes=num_classes, **kwargs)
+
+    @property
+    def calibration_temperature(self) -> float:
+        """Positive temperature used by :meth:`predict`."""
+
+        return self._calibration_temperature
+
+    @calibration_temperature.setter
+    def calibration_temperature(self, value: float) -> None:
+        if isinstance(value, bool):
+            raise ValueError(
+                "calibration_temperature must be a positive finite scalar."
+            )
+        try:
+            temperature = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "calibration_temperature must be a positive finite scalar."
+            ) from exc
+        if not np.isfinite(temperature) or temperature <= 0:
+            raise ValueError(
+                "calibration_temperature must be a positive finite scalar."
+            )
+        self._calibration_temperature = temperature
+
+    @property
+    def calibration_metadata(self) -> dict[str, object]:
+        """Return a defensive copy of checkpoint calibration provenance."""
+
+        return deepcopy(self._calibration_metadata)
+
+    @property
+    def router_config(self) -> dict[str, object]:
+        """Return a defensive copy of the checkpoint router configuration."""
+
+        return deepcopy(self._router_config)
+
+    def set_routing_metadata(
+        self,
+        *,
+        calibration: Mapping[str, object] | None = None,
+        router_config: Mapping[str, object] | None = None,
+    ) -> None:
+        """Attach immutable-by-copy deployment metadata loaded with a checkpoint."""
+
+        if calibration is not None and not isinstance(calibration, Mapping):
+            raise ValueError("calibration metadata must be a mapping.")
+        if router_config is not None and not isinstance(router_config, Mapping):
+            raise ValueError("router_config metadata must be a mapping.")
+        self._calibration_metadata = deepcopy(dict(calibration or {}))
+        self._router_config = deepcopy(dict(router_config or {}))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Return raw logits. Shape: (batch, num_classes)."""
@@ -62,10 +139,24 @@ class GenreClassifier(nn.Module):
                 genre: str -- predicted genre label
                 probabilities: dict[str, float] -- per-genre softmax probabilities
                 confidence: float -- max probability
+                calibration_temperature: float -- temperature used for probabilities
         """
         self.eval()
         logits = self.forward(x)
-        probs = F.softmax(logits, dim=-1)  # (batch, num_classes)
+        if logits.ndim != 2 or logits.shape[0] == 0:
+            raise ValueError(
+                "Classifier output must have shape (batch, num_classes) "
+                "with a non-empty batch."
+            )
+        if logits.shape[1] != len(self.genre_labels):
+            raise ValueError(
+                "Classifier output class count does not match genre_labels "
+                f"({logits.shape[1]} != {len(self.genre_labels)})."
+            )
+        probs = F.softmax(
+            logits / self.calibration_temperature,
+            dim=-1,
+        )  # (batch, num_classes)
         # Take first item in batch
         probs_np = probs[0].cpu().numpy()
         top_idx = int(probs_np.argmax())
@@ -75,6 +166,7 @@ class GenreClassifier(nn.Module):
                 label: float(p) for label, p in zip(self.genre_labels, probs_np)
             },
             "confidence": float(probs_np[top_idx]),
+            "calibration_temperature": self.calibration_temperature,
         }
 
     @staticmethod
@@ -106,7 +198,10 @@ class GenreClassifier(nn.Module):
             audio = np.pad(audio, (0, target_len - len(audio)))
 
         mel = librosa.feature.melspectrogram(
-            y=audio, sr=sr, n_mels=n_mels, hop_length=hop_length,
+            y=audio,
+            sr=sr,
+            n_mels=n_mels,
+            hop_length=hop_length,
         )
         log_mel = np.log(mel + 1e-6)
         tensor = torch.from_numpy(log_mel).float().unsqueeze(0).unsqueeze(0)
@@ -133,7 +228,9 @@ class GenreClassifier(nn.Module):
         elif len(audio) < target_len:
             audio = np.pad(audio, (0, target_len - len(audio)))
 
-        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=n_mfcc, hop_length=hop_length)
+        mfcc = librosa.feature.mfcc(
+            y=audio, sr=sr, n_mfcc=n_mfcc, hop_length=hop_length
+        )
         delta = librosa.feature.delta(mfcc)
         delta2 = librosa.feature.delta(mfcc, order=2)
         features = np.concatenate([mfcc, delta, delta2], axis=0)  # (n_mfcc*3, time)
@@ -170,6 +267,7 @@ class GenreClassifier(nn.Module):
 # GenreRouter -- combines activations from multiple genre-adapted models
 # ---------------------------------------------------------------------------
 
+
 class GenreRouter:
     """Combines beat-tracker activations from genre-adapted models.
 
@@ -179,9 +277,10 @@ class GenreRouter:
     Args:
         genre_labels: Genre label strings (must match activation dict keys).
         strategy: Routing strategy -- "hard", "soft", or "hybrid".
-        ema_alpha: EMA smoothing factor (0 = no smoothing, 1 = no memory).
+        ema_alpha: EMA update factor (0 = retain state, 1 = no memory).
         confidence_threshold: Below this, fall back to "other" / baseline.
         blend_threshold: For hybrid mode, hard-route above this confidence.
+        fallback_label: Baseline activation used below the confidence threshold.
     """
 
     def __init__(
@@ -191,16 +290,65 @@ class GenreRouter:
         ema_alpha: float = 0.3,
         confidence_threshold: float = 0.7,
         blend_threshold: float = 0.8,
+        fallback_label: Optional[str] = None,
     ):
-        self.genre_labels = genre_labels or GENRE_LABELS
+        labels = list(GENRE_LABELS if genre_labels is None else genre_labels)
+        if not labels:
+            raise ValueError("genre_labels must not be empty.")
+        if any(not isinstance(label, str) or not label for label in labels):
+            raise ValueError("genre_labels must contain non-empty strings.")
+        if len(set(labels)) != len(labels):
+            raise ValueError("genre_labels must be unique.")
+        if strategy not in {"hard", "soft", "hybrid"}:
+            raise ValueError("strategy must be 'hard', 'soft', or 'hybrid'.")
+        if strategy == "hybrid" and len(labels) < 2:
+            raise ValueError("hybrid routing requires at least two genre labels.")
+
+        alpha = self._unit_interval(ema_alpha, name="ema_alpha")
+        confidence = self._unit_interval(
+            confidence_threshold,
+            name="confidence_threshold",
+        )
+        blend = self._unit_interval(blend_threshold, name="blend_threshold")
+        if blend < confidence:
+            raise ValueError(
+                "blend_threshold must be greater than or equal to "
+                "confidence_threshold."
+            )
+        fallback = (
+            ("other" if "other" in labels else labels[-1])
+            if fallback_label is None
+            else fallback_label
+        )
+        if fallback not in labels:
+            raise ValueError("fallback_label must be present in genre_labels.")
+
+        self.genre_labels = labels
         self.strategy = strategy
-        self.ema_alpha = ema_alpha
-        self.confidence_threshold = confidence_threshold
-        self.blend_threshold = blend_threshold
+        self.ema_alpha = alpha
+        self.confidence_threshold = confidence
+        self.blend_threshold = blend
+        self.fallback_label = fallback
 
         # Initialise smoothed probabilities to uniform
         n = len(self.genre_labels)
-        self._smoothed_probs = np.ones(n) / n
+        self._smoothed_probs = np.full(n, 1.0 / n, dtype=np.float64)
+
+    @staticmethod
+    def _unit_interval(value: float, *, name: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be finite and between 0 and 1.") from exc
+        if not np.isfinite(number) or not 0.0 <= number <= 1.0:
+            raise ValueError(f"{name} must be finite and between 0 and 1.")
+        return number
+
+    @property
+    def smoothed_probs(self) -> np.ndarray:
+        """Return a defensive copy of the current routing probabilities."""
+
+        return self._smoothed_probs.copy()
 
     def update_probs(self, raw_probs: np.ndarray) -> np.ndarray:
         """Update smoothed genre probabilities with new classifier output.
@@ -211,11 +359,61 @@ class GenreRouter:
         Returns:
             EMA-smoothed probabilities.
         """
+        if isinstance(raw_probs, torch.Tensor):
+            raw_probs = raw_probs.detach().cpu().numpy()
+        try:
+            probabilities = np.asarray(raw_probs, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("raw_probs must be a numeric probability vector.") from exc
+        expected_shape = (len(self.genre_labels),)
+        if probabilities.shape != expected_shape:
+            raise ValueError(
+                f"raw_probs must have shape {expected_shape}, got {probabilities.shape}."
+            )
+        if not np.isfinite(probabilities).all() or (probabilities < 0).any():
+            raise ValueError("raw_probs must contain finite, non-negative values.")
+        total = float(probabilities.sum())
+        if not np.isclose(total, 1.0, rtol=1e-5, atol=1e-8):
+            raise ValueError("raw_probs must sum to 1.")
+        probabilities = probabilities / total
         self._smoothed_probs = (
-            self.ema_alpha * raw_probs
+            self.ema_alpha * probabilities
             + (1.0 - self.ema_alpha) * self._smoothed_probs
         )
         return self._smoothed_probs.copy()
+
+    def _validated_activations(
+        self,
+        activations: Mapping[str, np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        if not isinstance(activations, Mapping):
+            raise ValueError("activations must be a mapping keyed by genre label.")
+        missing = [label for label in self.genre_labels if label not in activations]
+        if missing:
+            raise ValueError(f"activations are missing genre labels: {missing}.")
+
+        arrays: dict[str, np.ndarray] = {}
+        expected_shape: tuple[int, ...] | None = None
+        for label in self.genre_labels:
+            try:
+                array = np.asarray(activations[label])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Activation for {label!r} must be array-like."
+                ) from exc
+            if not np.issubdtype(array.dtype, np.number):
+                raise ValueError(f"Activation for {label!r} must be numeric.")
+            if not np.isfinite(array).all():
+                raise ValueError(f"Activation for {label!r} must be finite.")
+            if expected_shape is None:
+                expected_shape = array.shape
+            elif array.shape != expected_shape:
+                raise ValueError(
+                    "All activation arrays must have the same shape "
+                    f"({array.shape} != {expected_shape} for {label!r})."
+                )
+            arrays[label] = array
+        return arrays
 
     def route(self, activations: Dict[str, np.ndarray]) -> np.ndarray:
         """Combine per-genre activations according to the current strategy.
@@ -227,6 +425,7 @@ class GenreRouter:
         Returns:
             Combined activation array (same shape as individual activations).
         """
+        arrays = self._validated_activations(activations)
         probs = self._smoothed_probs
         top_idx = int(np.argmax(probs))
         top_genre = self.genre_labels[top_idx]
@@ -234,39 +433,38 @@ class GenreRouter:
 
         # Below confidence threshold -> use baseline ("other")
         if top_conf < self.confidence_threshold:
-            return activations.get("other", activations[self.genre_labels[-1]])
+            return np.array(arrays[self.fallback_label], copy=True)
 
         if self.strategy == "hard":
-            return activations[top_genre]
+            return np.array(arrays[top_genre], copy=True)
 
         elif self.strategy == "soft":
-            combined = np.zeros_like(next(iter(activations.values())))
+            dtype = np.result_type(
+                np.float64,
+                *(array.dtype for array in arrays.values()),
+            )
+            combined = np.zeros_like(next(iter(arrays.values())), dtype=dtype)
             for i, genre in enumerate(self.genre_labels):
-                if genre in activations:
-                    combined = combined + probs[i] * activations[genre]
+                combined = combined + probs[i] * arrays[genre]
             return combined
 
         elif self.strategy == "hybrid":
             if top_conf >= self.blend_threshold:
-                return activations[top_genre]
+                return np.array(arrays[top_genre], copy=True)
             # Blend top-2
-            sorted_idx = np.argsort(probs)[::-1]
+            sorted_idx = np.argsort(-probs, kind="stable")
             g1 = self.genre_labels[sorted_idx[0]]
             g2 = self.genre_labels[sorted_idx[1]]
             p1, p2 = probs[sorted_idx[0]], probs[sorted_idx[1]]
             total = p1 + p2
-            return (p1 / total) * activations[g1] + (p2 / total) * activations[g2]
-
-        else:
-            raise ValueError(f"Unknown routing strategy: {self.strategy}")
+            return (p1 / total) * arrays[g1] + (p2 / total) * arrays[g2]
 
     def get_status(self) -> str:
         """Human-readable status string for UI display."""
         probs = self._smoothed_probs
         top_idx = int(np.argmax(probs))
         parts = [
-            f"{g.capitalize()} ({p:.0%})"
-            for g, p in zip(self.genre_labels, probs)
+            f"{g.capitalize()} ({p:.0%})" for g, p in zip(self.genre_labels, probs)
         ]
         prefix = f"Auto [{self.strategy}]"
         return f"{prefix}: {' | '.join(parts)}"
@@ -274,4 +472,4 @@ class GenreRouter:
     def reset(self):
         """Reset smoothed probabilities to uniform."""
         n = len(self.genre_labels)
-        self._smoothed_probs = np.ones(n) / n
+        self._smoothed_probs = np.full(n, 1.0 / n, dtype=np.float64)

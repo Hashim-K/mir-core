@@ -1,20 +1,27 @@
-# mir_core/classifier/evaluation/__init__.py
-"""Classifier evaluation metrics (stubs — not yet implemented).
+"""Metrics and confidence calibration for genre-classifier routing."""
 
-Will provide: accuracy, macro_f1, confusion_matrix when classifierlab is built.
-"""
+from .calibration import (
+    RoutingThresholdSelection,
+    apply_temperature,
+    expected_calibration_error,
+    fit_temperature,
+    negative_log_likelihood,
+    select_fallback_threshold,
+    select_routing_threshold,
+    softmax_probabilities,
+)
+from .metrics import accuracy, confusion_matrix, macro_f1
 
-
-def accuracy(predictions, targets) -> float:
-    """Classification accuracy. Not yet implemented."""
-    raise NotImplementedError("classifier evaluation not yet implemented")
-
-
-def macro_f1(predictions, targets) -> float:
-    """Macro-averaged F1 score. Not yet implemented."""
-    raise NotImplementedError("classifier evaluation not yet implemented")
-
-
-def confusion_matrix(predictions, targets):
-    """Confusion matrix. Not yet implemented."""
-    raise NotImplementedError("classifier evaluation not yet implemented")
+__all__ = [
+    "RoutingThresholdSelection",
+    "accuracy",
+    "apply_temperature",
+    "confusion_matrix",
+    "expected_calibration_error",
+    "fit_temperature",
+    "macro_f1",
+    "negative_log_likelihood",
+    "select_fallback_threshold",
+    "select_routing_threshold",
+    "softmax_probabilities",
+]
