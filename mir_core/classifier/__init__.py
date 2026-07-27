@@ -1,2 +1,14 @@
 # mir_core/classifier/__init__.py
-"""Music-classifier experiments, metrics, and confidence calibration."""
+"""Music-classifier evaluation and streaming runtime utilities."""
+
+from .runtime import (
+    StreamingClassifierResult,
+    StreamingClassifierRuntime,
+    StreamingClassifierState,
+)
+
+__all__ = [
+    "StreamingClassifierResult",
+    "StreamingClassifierRuntime",
+    "StreamingClassifierState",
+]
