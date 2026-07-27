@@ -166,7 +166,7 @@ def test_runtime_hysteresis_requires_margin_to_leave_fallback() -> None:
     assert held.dominant_route_label == "candombe"
     assert held.routed_label == "other"
     assert held.hysteresis_held is True
-    assert held.fallback_reason == "hysteresis_hold"
+    assert held.fallback_reason == "confirmation_hold"
     assert released.routed_label == "candombe"
     assert released.switched is True
 
@@ -228,12 +228,164 @@ def test_runtime_exposes_exact_public_policy_plan(
     assert sum(result.policy_weights) == pytest.approx(1.0)
 
 
+def test_hard_execution_weights_wait_for_consecutive_confirmation() -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy="hard",
+        ema_alpha=1.0,
+        confidence_threshold=0.4,
+        switch_margin=0.1,
+        min_consecutive_windows=2,
+    )
+    window = _logit_window([0.70, 0.15, 0.10, 0.05])
+
+    pending = runtime.process_window(window, timestamp_seconds=1.0)
+    confirmed = runtime.process_window(window, timestamp_seconds=1.5)
+
+    assert pending.policy_weights == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert pending.execution_weights == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert pending.routed_label == "other"
+    assert pending.pending_route_label == "candombe"
+    assert pending.pending_route_count == 1
+    assert pending.hysteresis_held is True
+    assert confirmed.execution_weights == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert confirmed.routed_label == "candombe"
+    assert confirmed.pending_route_label is None
+    assert confirmed.pending_route_count == 0
+    assert confirmed.switched is True
+
+
+@pytest.mark.parametrize(
+    ("strategy", "probabilities"),
+    [
+        ("soft", [0.60, 0.25, 0.10, 0.05]),
+        ("hybrid", [0.60, 0.25, 0.10, 0.05]),
+    ],
+)
+def test_blended_execution_weights_remain_raw_while_label_is_pending(
+    strategy: str,
+    probabilities: list[float],
+) -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy=strategy,
+        ema_alpha=1.0,
+        confidence_threshold=0.3,
+        blend_threshold=0.8,
+        switch_margin=0.1,
+        min_consecutive_windows=3,
+    )
+
+    result = runtime.process_window(
+        _logit_window(probabilities),
+        timestamp_seconds=1.0,
+    )
+
+    assert result.route_mode in {"soft_blend", "top2_blend"}
+    assert result.routed_label == "other"
+    assert result.execution_weights == pytest.approx(result.policy_weights)
+    assert result.pending_route_label == "candombe"
+    assert result.pending_route_count == 1
+
+
+def test_hybrid_hard_execution_uses_confirmed_route_while_pending() -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy="hybrid",
+        ema_alpha=1.0,
+        confidence_threshold=0.3,
+        blend_threshold=0.8,
+        switch_margin=0.1,
+        min_consecutive_windows=2,
+    )
+
+    result = runtime.process_window(
+        _logit_window([0.90, 0.05, 0.03, 0.02]),
+        timestamp_seconds=1.0,
+    )
+
+    assert result.route_mode == "hard"
+    assert result.policy_weights == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert result.execution_weights == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert result.routed_label == "other"
+
+
+def test_runtime_resolves_nested_hysteresis_then_top_level_then_overrides() -> None:
+    classifier = _classifier()
+    classifier.set_routing_metadata(
+        router_config={
+            "strategy": "hard",
+            "ema_alpha": 1.0,
+            "confidence_threshold": 0.4,
+            "fallback_label": "other",
+            "switch_margin": 0.02,
+            "min_consecutive_windows": 1,
+            "hysteresis": {
+                "switch_margin": 0.12,
+                "min_consecutive_windows": 3,
+                "low_confidence_fallback": "immediate",
+            },
+        }
+    )
+
+    nested = StreamingClassifierRuntime(classifier)
+    explicit = StreamingClassifierRuntime(
+        classifier,
+        switch_margin=0.08,
+        min_consecutive_windows=2,
+    )
+
+    assert nested.switch_margin == pytest.approx(0.12)
+    assert nested.hysteresis_margin == pytest.approx(0.12)
+    assert nested.min_consecutive_windows == 3
+    assert explicit.switch_margin == pytest.approx(0.08)
+    assert explicit.min_consecutive_windows == 2
+
+    top_level_classifier = _classifier()
+    top_level_classifier.set_routing_metadata(
+        router_config={
+            "switch_margin": 0.07,
+            "min_consecutive_windows": 4,
+        }
+    )
+    top_level = StreamingClassifierRuntime(top_level_classifier)
+    assert top_level.switch_margin == pytest.approx(0.07)
+    assert top_level.min_consecutive_windows == 4
+
+
+def test_native_fallback_is_immediate_and_clears_pending_confirmation() -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy="hard",
+        ema_alpha=1.0,
+        confidence_threshold=0.3,
+        switch_margin=0.1,
+        min_consecutive_windows=3,
+    )
+    runtime.process_window(
+        _logit_window([0.70, 0.15, 0.10, 0.05]),
+        timestamp_seconds=1.0,
+    )
+
+    fallback = runtime.process_window(
+        _logit_window([0.05, 0.05, 0.10, 0.80]),
+        timestamp_seconds=1.5,
+    )
+
+    assert fallback.native_fallback_prediction is True
+    assert fallback.routed_label == "other"
+    assert fallback.pending_route_label is None
+    assert fallback.pending_route_count == 0
+    assert runtime.state.pending_route_label is None
+
+
 def test_runtime_reset_clears_all_temporal_state_and_allows_new_timeline() -> None:
     runtime = StreamingClassifierRuntime(
         _classifier(),
         strategy="hard",
         ema_alpha=1.0,
         confidence_threshold=0.0,
+        min_consecutive_windows=2,
     )
     runtime.process_window(
         _logit_window([0.8, 0.1, 0.05, 0.05]),
@@ -244,14 +396,21 @@ def test_runtime_reset_clears_all_temporal_state_and_allows_new_timeline() -> No
 
     assert runtime.state.windows_processed == 0
     assert runtime.state.last_timestamp_seconds is None
-    assert runtime.state.routed_label is None
+    assert runtime.state.routed_label == "other"
+    assert runtime.state.pending_route_label is None
+    assert runtime.state.pending_route_count == 0
     assert runtime.state.smoothed_probabilities == pytest.approx([0.25] * 4)
-    restarted = runtime.process_window(
+    pending = runtime.process_window(
         _logit_window([0.1, 0.8, 0.05, 0.05]),
         timestamp_seconds=0.5,
     )
-    assert restarted.sequence_index == 0
-    assert restarted.previous_routed_label is None
+    restarted = runtime.process_window(
+        _logit_window([0.1, 0.8, 0.05, 0.05]),
+        timestamp_seconds=1.0,
+    )
+    assert pending.sequence_index == 0
+    assert pending.previous_routed_label == "other"
+    assert pending.routed_label == "other"
     assert restarted.routed_label == "brid"
 
 
@@ -349,6 +508,8 @@ def test_runtime_retains_compact_state_but_not_feature_window() -> None:
     assert state.windows_processed == 1
     assert state.last_timestamp_seconds == pytest.approx(1.0)
     assert state.routed_label == "candombe"
+    assert state.pending_route_label is None
+    assert state.pending_route_count == 0
     assert isinstance(state.smoothed_probabilities, tuple)
     assert not any(
         isinstance(value, (np.ndarray, torch.Tensor))
@@ -363,6 +524,30 @@ def test_runtime_retains_compact_state_but_not_feature_window() -> None:
     assert not hasattr(runtime, "last_result")
 
 
+def test_runtime_reports_non_negative_ordered_stage_timings() -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy="hard",
+        ema_alpha=1.0,
+        confidence_threshold=0.0,
+    )
+
+    result = runtime.process_window(
+        _logit_window([0.7, 0.1, 0.1, 0.1]),
+        timestamp_seconds=1.0,
+    )
+
+    stages = [
+        result.timings.input_preparation_ms,
+        result.timings.device_transfer_ms,
+        result.timings.classifier_inference_ms,
+        result.timings.routing_ms,
+    ]
+    assert all(value >= 0.0 for value in stages)
+    assert result.timings.total_ms >= sum(stages)
+    assert result.as_dict()["timings"]["setup_scope"] == "excluded"
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -370,6 +555,13 @@ def test_runtime_retains_compact_state_but_not_feature_window() -> None:
         ({"temperature": 0.0}, "temperature"),
         ({"strategy": "unknown"}, "strategy"),
         ({"hysteresis_margin": -0.1}, "hysteresis_margin"),
+        ({"switch_margin": -0.1}, "switch_margin"),
+        ({"min_consecutive_windows": 0}, "min_consecutive_windows"),
+        ({"min_consecutive_windows": 1.5}, "min_consecutive_windows"),
+        (
+            {"switch_margin": 0.1, "hysteresis_margin": 0.2},
+            "must match",
+        ),
         (
             {"confidence_threshold": 0.9, "hysteresis_margin": 0.2},
             "must not exceed 1",
@@ -379,3 +571,21 @@ def test_runtime_retains_compact_state_but_not_feature_window() -> None:
 def test_runtime_rejects_invalid_configuration(kwargs, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         StreamingClassifierRuntime(_classifier(), **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("hysteresis", "match"),
+    [
+        ("invalid", "must be a mapping"),
+        ({"low_confidence_fallback": "delayed"}, "must be 'immediate'"),
+    ],
+)
+def test_runtime_rejects_invalid_checkpoint_hysteresis(
+    hysteresis,
+    match: str,
+) -> None:
+    classifier = _classifier()
+    classifier.set_routing_metadata(router_config={"hysteresis": hysteresis})
+
+    with pytest.raises(ValueError, match=match):
+        StreamingClassifierRuntime(classifier)

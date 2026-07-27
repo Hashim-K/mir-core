@@ -5,10 +5,12 @@ from .runtime import (
     StreamingClassifierResult,
     StreamingClassifierRuntime,
     StreamingClassifierState,
+    StreamingClassifierTimings,
 )
 
 __all__ = [
     "StreamingClassifierResult",
     "StreamingClassifierRuntime",
     "StreamingClassifierState",
+    "StreamingClassifierTimings",
 ]

@@ -8,8 +8,10 @@ results are never cached.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+import time
 from typing import Any
 
 import numpy as np
@@ -34,19 +36,44 @@ class StreamingClassifierState:
 
     windows_processed: int
     last_timestamp_seconds: float | None
-    routed_label: str | None
+    routed_label: str
+    pending_route_label: str | None
+    pending_route_count: int
     smoothed_probabilities: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingClassifierTimings:
+    """Per-window runtime stages, excluding model/checkpoint setup."""
+
+    input_preparation_ms: float
+    device_transfer_ms: float
+    classifier_inference_ms: float
+    routing_ms: float
+    total_ms: float
+
+    def as_dict(self) -> dict[str, float | str]:
+        """Return a JSON-compatible timing block."""
+
+        return {
+            "input_preparation_ms": self.input_preparation_ms,
+            "device_transfer_ms": self.device_transfer_ms,
+            "classifier_inference_ms": self.classifier_inference_ms,
+            "routing_ms": self.routing_ms,
+            "total_ms": self.total_ms,
+            "unit": "milliseconds",
+            "setup_scope": "excluded",
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class StreamingClassifierResult:
     """Classifier and routing output for one timestamped feature window.
 
-    ``policy_weights`` are the exact weights produced by :class:`GenreRouter`
-    using identity route activations. ``dominant_route_label`` is their argmax.
-    ``routed_label`` is the discrete control label after hysteresis; for soft or
-    hybrid routing it can intentionally differ from the continuously varying
-    policy-weight argmax while a switch is being held.
+    ``policy_weights`` are the raw weights produced by :class:`GenreRouter`
+    using identity route activations. ``execution_weights`` are the scheduler
+    plan: hard routing and hybrid's hard phase use the confirmed
+    ``routed_label`` while soft and hybrid top-2 retain the raw blended weights.
     """
 
     sequence_index: int
@@ -60,9 +87,14 @@ class StreamingClassifierResult:
     confidence: float
     smoothed_confidence: float
     policy_weights: tuple[float, ...]
+    execution_weights: tuple[float, ...]
     dominant_route_label: str
     routed_label: str
     previous_routed_label: str | None
+    pending_route_label: str | None
+    pending_route_count: int
+    min_consecutive_windows: int
+    switch_margin: float
     switched: bool
     hysteresis_held: bool
     confidence_rejected: bool
@@ -71,6 +103,7 @@ class StreamingClassifierResult:
     route_mode: str
     strategy: str
     temperature: float
+    timings: StreamingClassifierTimings
 
     @property
     def probabilities_by_label(self) -> dict[str, float]:
@@ -92,9 +125,15 @@ class StreamingClassifierResult:
 
     @property
     def policy_weights_by_label(self) -> dict[str, float]:
-        """Return exact GenreRouter policy weights keyed by route label."""
+        """Return raw GenreRouter policy weights keyed by route label."""
 
         return dict(zip(self.labels, self.policy_weights, strict=True))
+
+    @property
+    def execution_weights_by_label(self) -> dict[str, float]:
+        """Return final scheduler/execution weights keyed by route label."""
+
+        return dict(zip(self.labels, self.execution_weights, strict=True))
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation of this window result."""
@@ -112,9 +151,14 @@ class StreamingClassifierResult:
             "smoothed_confidence": self.smoothed_confidence,
             "route": {
                 "policy_weights": self.policy_weights_by_label,
+                "execution_weights": self.execution_weights_by_label,
                 "dominant_label": self.dominant_route_label,
                 "routed_label": self.routed_label,
                 "previous_routed_label": self.previous_routed_label,
+                "pending_label": self.pending_route_label,
+                "pending_count": self.pending_route_count,
+                "min_consecutive_windows": self.min_consecutive_windows,
+                "switch_margin": self.switch_margin,
                 "switched": self.switched,
                 "hysteresis_held": self.hysteresis_held,
                 "confidence_rejected": self.confidence_rejected,
@@ -124,6 +168,7 @@ class StreamingClassifierResult:
                 "strategy": self.strategy,
             },
             "temperature": self.temperature,
+            "timings": self.timings.as_dict(),
         }
 
 
@@ -144,10 +189,11 @@ class StreamingClassifierRuntime:
         blend_threshold: Hybrid hard-route threshold. If omitted it defaults to
             at least the confidence threshold.
         fallback_label: Baseline/global route label.
-        hysteresis_margin: Required probability advantage before changing a
-            non-fallback route. Leaving fallback additionally requires
-            ``confidence_threshold + hysteresis_margin``. A low-confidence
-            fallback is immediate and is never blocked by hysteresis.
+        switch_margin: Required EMA probability advantage before a route can
+            enter confirmation.
+        min_consecutive_windows: Number of consecutive eligible windows needed
+            to confirm a non-fallback entry or switch.
+        hysteresis_margin: Compatibility alias for ``switch_margin``.
 
     The runtime does not extract audio features and does not invoke beat models.
     Callers own the streaming frontend and pass each transient feature window
@@ -165,12 +211,29 @@ class StreamingClassifierRuntime:
         confidence_threshold: float | None = None,
         blend_threshold: float | None = None,
         fallback_label: str | None = None,
+        switch_margin: float | None = None,
+        min_consecutive_windows: int | None = None,
         hysteresis_margin: float | None = None,
     ) -> None:
         if not isinstance(classifier, GenreClassifier):
             raise TypeError("classifier must be a GenreClassifier.")
         self._validate_feature_layout(feature_layout)
         router_config = classifier.router_config
+        raw_hysteresis_config = router_config.get("hysteresis", {})
+        if raw_hysteresis_config is None:
+            raw_hysteresis_config = {}
+        if not isinstance(raw_hysteresis_config, Mapping):
+            raise ValueError("router_config.hysteresis must be a mapping.")
+        hysteresis_config = dict(raw_hysteresis_config)
+        low_confidence_fallback = hysteresis_config.get(
+            "low_confidence_fallback",
+            router_config.get("low_confidence_fallback", "immediate"),
+        )
+        if low_confidence_fallback != "immediate":
+            raise ValueError(
+                "low_confidence_fallback must be 'immediate' for the "
+                "streaming runtime."
+            )
 
         resolved_temperature = (
             classifier.calibration_temperature
@@ -218,25 +281,67 @@ class StreamingClassifierRuntime:
                 ),
             )
         )
-        resolved_hysteresis = (
-            router_config.get("hysteresis_margin", 0.0)
-            if hysteresis_margin is None
-            else hysteresis_margin
-        )
-        resolved_hysteresis_number = self._unit_interval(
-            resolved_hysteresis,
-            name="hysteresis_margin",
-        )
-        if resolved_confidence_number + resolved_hysteresis_number > 1.0:
-            raise ValueError(
-                "confidence_threshold + hysteresis_margin must not exceed 1."
+        if switch_margin is not None and hysteresis_margin is not None:
+            canonical_margin = self._unit_interval(
+                switch_margin,
+                name="switch_margin",
             )
+            alias_margin = self._unit_interval(
+                hysteresis_margin,
+                name="hysteresis_margin",
+            )
+            if canonical_margin != alias_margin:
+                raise ValueError(
+                    "switch_margin and hysteresis_margin must match when both "
+                    "are provided."
+                )
+            explicit_margin: Any | None = canonical_margin
+        elif switch_margin is not None:
+            explicit_margin = switch_margin
+        else:
+            explicit_margin = hysteresis_margin
+        configured_margin = hysteresis_config.get("switch_margin")
+        if configured_margin is None:
+            configured_margin = router_config.get("switch_margin")
+        if configured_margin is None:
+            configured_margin = router_config.get("hysteresis_margin", 0.0)
+        resolved_switch_margin = (
+            configured_margin if explicit_margin is None else explicit_margin
+        )
+        margin_name = (
+            "hysteresis_margin"
+            if switch_margin is None and hysteresis_margin is not None
+            else "switch_margin"
+        )
+        resolved_switch_margin_number = self._unit_interval(
+            resolved_switch_margin,
+            name=margin_name,
+        )
+        configured_minimum = hysteresis_config.get("min_consecutive_windows")
+        if configured_minimum is None:
+            configured_minimum = router_config.get(
+                "min_consecutive_windows",
+                1,
+            )
+        resolved_minimum = (
+            configured_minimum
+            if min_consecutive_windows is None
+            else min_consecutive_windows
+        )
+        resolved_minimum_number = self._positive_integer(
+            resolved_minimum,
+            name="min_consecutive_windows",
+        )
+        if resolved_confidence_number + resolved_switch_margin_number > 1.0:
+            raise ValueError("confidence_threshold + switch_margin must not exceed 1.")
 
         self.classifier = classifier
         self.classifier.eval()
         self.feature_layout = feature_layout
         self.temperature = float(resolved_temperature)
-        self.hysteresis_margin = resolved_hysteresis_number
+        self.switch_margin = resolved_switch_margin_number
+        self.hysteresis_margin = resolved_switch_margin_number
+        self.min_consecutive_windows = resolved_minimum_number
         self.router = GenreRouter(
             genre_labels=list(classifier.genre_labels),
             strategy=resolved_strategy,
@@ -255,7 +360,9 @@ class StreamingClassifierRuntime:
         }
         self._windows_processed = 0
         self._last_timestamp_seconds: float | None = None
-        self._routed_label: str | None = None
+        self._routed_label = self.router.fallback_label
+        self._pending_route_label: str | None = None
+        self._pending_route_count = 0
 
     @staticmethod
     def _positive_finite(value: Any, *, name: str) -> float:
@@ -282,6 +389,18 @@ class StreamingClassifierRuntime:
         return number
 
     @staticmethod
+    def _positive_integer(value: Any, *, name: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be a positive integer.")
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{name} must be a positive integer.") from exc
+        if number <= 0 or number != value:
+            raise ValueError(f"{name} must be a positive integer.")
+        return number
+
+    @staticmethod
     def _validate_feature_layout(layout: str) -> None:
         if layout not in _FEATURE_LAYOUTS:
             raise ValueError(
@@ -297,6 +416,8 @@ class StreamingClassifierRuntime:
             windows_processed=self._windows_processed,
             last_timestamp_seconds=self._last_timestamp_seconds,
             routed_label=self._routed_label,
+            pending_route_label=self._pending_route_label,
+            pending_route_count=self._pending_route_count,
             smoothed_probabilities=tuple(
                 float(value) for value in self.router.smoothed_probs
             ),
@@ -308,7 +429,9 @@ class StreamingClassifierRuntime:
         self.router.reset()
         self._windows_processed = 0
         self._last_timestamp_seconds = None
-        self._routed_label = None
+        self._routed_label = self.router.fallback_label
+        self._pending_route_label = None
+        self._pending_route_count = 0
 
     def _validated_timestamp(self, timestamp_seconds: Any) -> float:
         if isinstance(timestamp_seconds, bool):
@@ -411,33 +534,56 @@ class StreamingClassifierRuntime:
         buffer = next(self.classifier.buffers(), None)
         return buffer.device if buffer is not None else torch.device("cpu")
 
-    def _apply_hysteresis(
+    @staticmethod
+    def _synchronize(device: torch.device) -> None:
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+    @staticmethod
+    def _elapsed_ms(started_ns: int) -> float:
+        return (time.perf_counter_ns() - started_ns) / 1_000_000.0
+
+    def _clear_pending_route(self) -> None:
+        self._pending_route_label = None
+        self._pending_route_count = 0
+
+    def _confirm_route(
         self,
         candidate_label: str,
         smoothed_probabilities: np.ndarray,
         *,
         confidence_rejected: bool,
+        native_fallback_prediction: bool,
     ) -> tuple[str, bool]:
-        previous = self._routed_label
-        if previous is None or candidate_label == previous:
-            return candidate_label, False
-        if confidence_rejected:
+        current = self._routed_label
+        if confidence_rejected or native_fallback_prediction:
+            self._clear_pending_route()
             return self.router.fallback_label, False
+        if candidate_label == current:
+            self._clear_pending_route()
+            return current, False
 
         candidate_probability = float(
             smoothed_probabilities[self._label_to_index[candidate_label]]
         )
-        if previous == self.router.fallback_label:
-            exit_threshold = self.router.confidence_threshold + self.hysteresis_margin
-            if candidate_probability < exit_threshold:
-                return previous, True
-            return candidate_label, False
-
-        previous_probability = float(
-            smoothed_probabilities[self._label_to_index[previous]]
+        reference_probability = (
+            self.router.confidence_threshold
+            if current == self.router.fallback_label
+            else float(smoothed_probabilities[self._label_to_index[current]])
         )
-        if candidate_probability < previous_probability + self.hysteresis_margin:
-            return previous, True
+        if candidate_probability - reference_probability < self.switch_margin:
+            self._clear_pending_route()
+            return current, True
+
+        if self._pending_route_label == candidate_label:
+            self._pending_route_count += 1
+        else:
+            self._pending_route_label = candidate_label
+            self._pending_route_count = 1
+        if self._pending_route_count < self.min_consecutive_windows:
+            return current, True
+
+        self._clear_pending_route()
         return candidate_label, False
 
     def _route_mode(
@@ -456,6 +602,21 @@ class StreamingClassifierRuntime:
             return "hard"
         return "top2_blend"
 
+    def _execution_weights(
+        self,
+        policy_weights: np.ndarray,
+        *,
+        routed_label: str,
+        route_mode: str,
+    ) -> np.ndarray:
+        if self.router.strategy == "hard" or (
+            self.router.strategy == "hybrid" and route_mode == "hard"
+        ):
+            weights = np.zeros(len(self.classifier.genre_labels), dtype=np.float64)
+            weights[self._label_to_index[routed_label]] = 1.0
+            return weights
+        return np.array(policy_weights, dtype=np.float64, copy=True)
+
     def process_window(
         self,
         feature_window: np.ndarray | torch.Tensor,
@@ -465,19 +626,37 @@ class StreamingClassifierRuntime:
     ) -> StreamingClassifierResult:
         """Classify and route one transient timestamped feature window."""
 
+        total_started = time.perf_counter_ns()
         timestamp = self._validated_timestamp(timestamp_seconds)
+        if isinstance(feature_window, torch.Tensor):
+            self._synchronize(feature_window.device)
+        preparation_started = time.perf_counter_ns()
         prepared = self._prepare_window(
             feature_window,
             layout=(self.feature_layout if feature_layout is None else feature_layout),
         )
+        self._synchronize(prepared.device)
+        input_preparation_ms = self._elapsed_ms(preparation_started)
+
+        model_device = self._model_device()
+        self._synchronize(model_device)
+        transfer_started = time.perf_counter_ns()
+        model_input = prepared.to(
+            device=model_device,
+            dtype=torch.float32,
+        )
+        self._synchronize(model_device)
+        device_transfer_ms = self._elapsed_ms(transfer_started)
+
         self.classifier.eval()
+        self._synchronize(model_device)
+        inference_started = time.perf_counter_ns()
         with torch.inference_mode():
-            logits_tensor = self.classifier(
-                prepared.to(
-                    device=self._model_device(),
-                    dtype=torch.float32,
-                )
-            )
+            logits_tensor = self.classifier(model_input)
+        self._synchronize(model_device)
+        classifier_inference_ms = self._elapsed_ms(inference_started)
+
+        routing_started = time.perf_counter_ns()
         if logits_tensor.ndim != 2 or logits_tensor.shape != (
             1,
             len(self.classifier.genre_labels),
@@ -510,15 +689,23 @@ class StreamingClassifierRuntime:
         smoothed_confidence = float(smoothed[smoothed_index])
         confidence_rejected = smoothed_confidence < self.router.confidence_threshold
         previous_routed_label = self._routed_label
-        routed_label, hysteresis_held = self._apply_hysteresis(
+        native_fallback = smoothed_label == self.router.fallback_label
+        routed_label, hysteresis_held = self._confirm_route(
             dominant_route_label,
             smoothed,
             confidence_rejected=confidence_rejected,
+            native_fallback_prediction=native_fallback,
         )
-        switched = (
-            previous_routed_label is not None and routed_label != previous_routed_label
+        switched = routed_label != previous_routed_label
+        route_mode = self._route_mode(
+            confidence_rejected=confidence_rejected,
+            smoothed_confidence=smoothed_confidence,
         )
-        native_fallback = smoothed_label == self.router.fallback_label
+        execution_weights = self._execution_weights(
+            policy_weights,
+            routed_label=routed_label,
+            route_mode=route_mode,
+        )
         if routed_label != self.router.fallback_label:
             fallback_reason = None
         elif confidence_rejected:
@@ -526,12 +713,23 @@ class StreamingClassifierRuntime:
         elif native_fallback:
             fallback_reason = "native_prediction"
         elif hysteresis_held:
-            fallback_reason = "hysteresis_hold"
+            fallback_reason = "confirmation_hold"
         else:
             fallback_reason = "route_policy"
+        self._routed_label = routed_label
+        self._last_timestamp_seconds = timestamp
+        self._windows_processed += 1
+        routing_ms = self._elapsed_ms(routing_started)
+        timings = StreamingClassifierTimings(
+            input_preparation_ms=input_preparation_ms,
+            device_transfer_ms=device_transfer_ms,
+            classifier_inference_ms=classifier_inference_ms,
+            routing_ms=routing_ms,
+            total_ms=self._elapsed_ms(total_started),
+        )
 
         result = StreamingClassifierResult(
-            sequence_index=self._windows_processed,
+            sequence_index=self._windows_processed - 1,
             timestamp_seconds=timestamp,
             labels=tuple(self.classifier.genre_labels),
             logits=tuple(float(value) for value in logits),
@@ -542,24 +740,24 @@ class StreamingClassifierRuntime:
             confidence=confidence,
             smoothed_confidence=smoothed_confidence,
             policy_weights=tuple(float(value) for value in policy_weights),
+            execution_weights=tuple(float(value) for value in execution_weights),
             dominant_route_label=dominant_route_label,
             routed_label=routed_label,
             previous_routed_label=previous_routed_label,
+            pending_route_label=self._pending_route_label,
+            pending_route_count=self._pending_route_count,
+            min_consecutive_windows=self.min_consecutive_windows,
+            switch_margin=self.switch_margin,
             switched=switched,
             hysteresis_held=hysteresis_held,
             confidence_rejected=confidence_rejected,
             native_fallback_prediction=native_fallback,
             fallback_reason=fallback_reason,
-            route_mode=self._route_mode(
-                confidence_rejected=confidence_rejected,
-                smoothed_confidence=smoothed_confidence,
-            ),
+            route_mode=route_mode,
             strategy=self.router.strategy,
             temperature=self.temperature,
+            timings=timings,
         )
-        self._routed_label = routed_label
-        self._last_timestamp_seconds = timestamp
-        self._windows_processed += 1
         return result
 
 
@@ -567,4 +765,5 @@ __all__ = [
     "StreamingClassifierResult",
     "StreamingClassifierRuntime",
     "StreamingClassifierState",
+    "StreamingClassifierTimings",
 ]
