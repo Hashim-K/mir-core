@@ -65,14 +65,20 @@ def test_beatnet_uses_official_output_class_order():
     assert output["event_activations"].shape == (2, 5, 2)
     assert output["frame_class_activations"].shape == (2, 5, 3)
     assert output["frame_classes"].shape == (2, 5)
-    assert torch.allclose(output["beats"].squeeze(-1), expected[int(FrameClass.beat)].expand(2, 5))
+    expected_all_beats = (
+        expected[int(FrameClass.beat)] + expected[int(FrameClass.downbeat)]
+    )
+    assert torch.allclose(
+        output["beats"].squeeze(-1),
+        expected_all_beats.expand(2, 5),
+    )
     assert torch.allclose(
         output["downbeats"].squeeze(-1),
         expected[int(FrameClass.downbeat)].expand(2, 5),
     )
     assert torch.allclose(
         output["event_activations"][:, :, int(EventChannel.beat)],
-        expected[int(FrameClass.beat)].expand(2, 5),
+        expected_all_beats.expand(2, 5),
     )
     assert torch.allclose(
         output["activations"][:, :, int(FrameClass.non_beat)],

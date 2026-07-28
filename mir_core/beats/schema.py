@@ -2,7 +2,8 @@
 
 The frame-class order follows the BeatNet/SpecTNT convention:
 ``[beat, downbeat, non_beat]``. The event-channel order follows the
-two-channel activation convention: ``[beat, downbeat]``.
+two-channel activation convention: ``[all beats, downbeat]``. Downbeats are
+therefore included in the canonical beat channel.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ class FrameClass(IntEnum):
 
 
 class EventChannel(IntEnum):
-    """Multi-label activation channels for beat/downbeat targets."""
+    """Multi-label channels where the beat channel includes downbeats."""
 
     beat = 0
     downbeat = 1
@@ -217,9 +218,14 @@ def frame_class_activations_to_event_activations(
     frame_activations: Any,
     *,
     dtype: type[np.floating[Any]] = np.float32,
-    downbeat_implies_beat: bool = False,
+    downbeat_implies_beat: bool = True,
 ) -> np.ndarray:
-    """Convert frame-class probabilities/logits to event-channel activations."""
+    """Convert frame-class probabilities to event-channel activations.
+
+    Frame classes are mutually exclusive, so the probability of any beat is
+    ``P(beat_only) + P(downbeat)``. Set ``downbeat_implies_beat=False`` only
+    when the caller explicitly needs the native exclusive class streams.
+    """
     activations = np.asarray(frame_activations, dtype=dtype)
     if activations.shape[-1] < NUM_FRAME_CLASSES:
         raise ValueError(
@@ -228,13 +234,12 @@ def frame_class_activations_to_event_activations(
         )
 
     events = np.zeros(activations.shape[:-1] + (NUM_EVENT_CHANNELS,), dtype=dtype)
-    events[..., BEAT_CHANNEL] = activations[..., int(FrameClass.beat)]
+    beat = activations[..., int(FrameClass.beat)]
+    downbeat = activations[..., int(FrameClass.downbeat)]
     if downbeat_implies_beat:
-        events[..., BEAT_CHANNEL] = np.maximum(
-            events[..., BEAT_CHANNEL],
-            activations[..., int(FrameClass.downbeat)],
-        )
-    events[..., DOWNBEAT_CHANNEL] = activations[..., int(FrameClass.downbeat)]
+        beat = beat + downbeat
+    events[..., BEAT_CHANNEL] = beat
+    events[..., DOWNBEAT_CHANNEL] = downbeat
     return events
 
 
@@ -243,7 +248,7 @@ def data_to_event_activations(
     definition: BeatDataDefinition | BeatDataRepresentation | str | dict[str, Any],
     *,
     dtype: type[np.floating[Any]] = np.float32,
-    downbeat_implies_beat: bool = False,
+    downbeat_implies_beat: bool = True,
 ) -> np.ndarray:
     """Convert beat data in a declared representation to event activations."""
     resolved = coerce_beat_data_definition(definition)
@@ -279,7 +284,7 @@ def event_activations_to_frame_class_activations(
     *,
     dtype: type[np.floating[Any]] = np.float32,
 ) -> np.ndarray:
-    """Convert ``[beat, downbeat]`` activations to class-like probabilities."""
+    """Convert canonical ``[all beats, downbeat]`` activations to classes."""
     acts = np.asarray(activations, dtype=dtype)
     if acts.shape[-1] < NUM_EVENT_CHANNELS:
         raise ValueError(

@@ -17,9 +17,13 @@ from .schema import (
 def frame_class_activations_to_event_activations(
     frame_activations: torch.Tensor,
     *,
-    downbeat_implies_beat: bool = False,
+    downbeat_implies_beat: bool = True,
 ) -> torch.Tensor:
-    """Convert class probabilities/logits to ``[beat, downbeat]`` activations."""
+    """Convert class probabilities to ``[all beats, downbeat]`` activations.
+
+    The frame classes are mutually exclusive, so the canonical beat-event
+    probability is the sum of the beat-only and downbeat class probabilities.
+    """
     if frame_activations.shape[-1] < NUM_FRAME_CLASSES:
         raise ValueError(
             "frame-class activations must have beat/downbeat/non_beat classes "
@@ -29,14 +33,14 @@ def frame_class_activations_to_event_activations(
     beat = frame_activations[..., int(FrameClass.beat)]
     downbeat = frame_activations[..., int(FrameClass.downbeat)]
     if downbeat_implies_beat:
-        beat = torch.maximum(beat, downbeat)
+        beat = beat + downbeat
     return torch.stack((beat, downbeat), dim=-1)
 
 
 def event_activations_to_frame_class_activations(
     event_activations: torch.Tensor,
 ) -> torch.Tensor:
-    """Convert ``[beat, downbeat]`` activations to class-like probabilities."""
+    """Convert canonical ``[all beats, downbeat]`` activations to classes."""
     if event_activations.shape[-1] < NUM_EVENT_CHANNELS:
         raise ValueError(
             "event activations must have beat/downbeat channels in the last axis"

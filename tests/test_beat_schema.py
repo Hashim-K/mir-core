@@ -69,7 +69,22 @@ def test_frame_class_probabilities_convert_to_event_activations() -> None:
 
     activations = frame_class_activations_to_event_activations(probs)
 
-    assert np.allclose(activations, [[0.8, 0.1], [0.1, 0.7]])
+    assert np.allclose(activations, [[0.9, 0.1], [0.8, 0.7]])
+    assert np.allclose(
+        event_activations_to_frame_class_activations(activations),
+        probs,
+    )
+
+
+def test_frame_class_probabilities_can_preserve_native_exclusive_streams() -> None:
+    probs = np.array([[0.7, 0.2, 0.1]], dtype=np.float32)
+
+    activations = frame_class_activations_to_event_activations(
+        probs,
+        downbeat_implies_beat=False,
+    )
+
+    assert np.allclose(activations, [[0.7, 0.2]])
 
 
 def test_data_to_event_activations_respects_declared_definition() -> None:
@@ -95,5 +110,10 @@ def test_torch_converters_match_schema_shapes() -> None:
     frame_classes = torch_event_to_frame_classes(event_activations)
 
     assert event_activations.shape == (1, 2, 2)
+    assert torch.allclose(
+        event_activations,
+        torch.tensor([[[0.9, 0.1], [0.8, 0.7]]]),
+    )
     assert frame_activations.shape == (1, 2, 3)
+    assert torch.allclose(frame_activations, frame_probs)
     assert frame_classes.tolist() == [[int(FrameClass.beat), int(FrameClass.downbeat)]]

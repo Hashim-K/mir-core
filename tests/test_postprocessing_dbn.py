@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from mir_core.beats.schema import frame_class_activations_to_event_activations
 from mir_core.postprocessing import dbn
 
 
@@ -84,7 +85,7 @@ def test_downbeat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
     }
 
 
-def test_downbeat_tracker_preserves_exclusive_frame_class_probabilities(
+def test_downbeat_tracker_converts_canonical_activations_to_madmom_probabilities(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -92,11 +93,8 @@ def test_downbeat_tracker_preserves_exclusive_frame_class_probabilities(
         "DBNDownBeatTrackingProcessor",
         _FakeProcessor,
     )
-    tracker = dbn.DBNDownbeatTracker(
-        beats_per_bar=[2],
-        beat_activations_include_downbeats=False,
-    )
-    beat = np.asarray([0.7, 0.1])
+    tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
+    beat = np.asarray([0.9, 0.9])
     downbeat = np.asarray([0.2, 0.8])
 
     tracker(beat, downbeat)
@@ -107,7 +105,7 @@ def test_downbeat_tracker_preserves_exclusive_frame_class_probabilities(
     )
 
 
-def test_downbeat_tracker_converts_inclusive_event_probabilities(
+def test_downbeat_tracker_preserves_frame_class_numerics_after_canonicalization(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -115,20 +113,22 @@ def test_downbeat_tracker_converts_inclusive_event_probabilities(
         "DBNDownBeatTrackingProcessor",
         _FakeProcessor,
     )
-    tracker = dbn.DBNDownbeatTracker(
-        beats_per_bar=[2],
-        beat_activations_include_downbeats=True,
+    tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
+    frame_classes = np.asarray(
+        [[0.7, 0.2, 0.1], [0.1, 0.8, 0.1]],
+        dtype=np.float32,
     )
 
-    tracker(np.asarray([0.9, 0.8]), np.asarray([0.2, 0.8]))
+    events = frame_class_activations_to_event_activations(frame_classes)
+    tracker(events[:, 0], events[:, 1])
 
     assert np.allclose(
         tracker.processor.activations,
-        [[0.7, 0.2], [0.0, 0.8]],
+        frame_classes[:, :2],
     )
 
 
-def test_downbeat_tracker_rejects_invalid_exclusive_probabilities(
+def test_downbeat_tracker_rejects_invalid_probabilities(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -136,10 +136,7 @@ def test_downbeat_tracker_rejects_invalid_exclusive_probabilities(
         "DBNDownBeatTrackingProcessor",
         _FakeProcessor,
     )
-    tracker = dbn.DBNDownbeatTracker(
-        beats_per_bar=[2],
-        beat_activations_include_downbeats=False,
-    )
+    tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
 
-    with pytest.raises(ValueError, match="sum to at most 1"):
-        tracker(np.asarray([0.8]), np.asarray([0.4]))
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        tracker(np.asarray([1.2]), np.asarray([0.4]))

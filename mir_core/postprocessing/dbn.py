@@ -12,6 +12,8 @@ from typing import TypeAlias
 import madmom
 import numpy as np
 
+from mir_core.beats.schema import event_activations_to_frame_class_activations
+
 NumericOrSequence: TypeAlias = float | int | Sequence[float] | Sequence[int]
 
 
@@ -95,9 +97,6 @@ class DBNDownbeatTracker:
         threshold: Trim leading/trailing regions below this activation level
         correct: Align decoded events to local activation peaks
         num_threads: Number of meters decoded in parallel
-        beat_activations_include_downbeats: Whether the first input channel
-            includes downbeat probability. Event-activation models normally do;
-            mutually exclusive frame-class models such as BeatNet do not.
     """
 
     def __init__(
@@ -112,7 +111,6 @@ class DBNDownbeatTracker:
         threshold: float = 0.05,
         correct: bool = True,
         num_threads: int = 1,
-        beat_activations_include_downbeats: bool = True,
     ):
         if beats_per_bar is None:
             beats_per_bar = [3, 4]
@@ -130,9 +128,6 @@ class DBNDownbeatTracker:
             num_threads=num_threads,
         )
         self.fps = fps
-        self.beat_activations_include_downbeats = bool(
-            beat_activations_include_downbeats
-        )
 
     def __call__(
         self,
@@ -143,8 +138,8 @@ class DBNDownbeatTracker:
         Detect downbeats from activations.
 
         Args:
-            beat_activations: Beat activation function. Its inclusion of
-                downbeats is controlled by ``beat_activations_include_downbeats``.
+            beat_activations: Canonical all-beat activation function, including
+                downbeat probability.
             downbeat_activations: Downbeat activation function
 
         Returns:
@@ -167,12 +162,12 @@ class DBNDownbeatTracker:
                 "DBN downbeat activations must be probabilities in [0, 1]."
             )
 
-        beat_only = (
-            np.maximum(beat - downbeat, 0.0)
-            if self.beat_activations_include_downbeats
-            else beat
+        canonical = np.column_stack((beat, downbeat))
+        combined = event_activations_to_frame_class_activations(
+            canonical,
+            dtype=np.float64,
         )
-        combined = np.column_stack((beat_only, downbeat))
+        combined = combined[:, :2]
         if np.any(np.sum(combined, axis=1) > 1.0 + 1e-6):
             raise ValueError(
                 "Exclusive DBN beat and downbeat probabilities must sum to at most 1."
