@@ -12,7 +12,11 @@ from typing import TypeAlias
 import madmom
 import numpy as np
 
-from mir_core.beats.schema import event_activations_to_frame_class_activations
+from mir_core.beats.schema import (
+    EventActivations,
+    require_event_activations,
+    to_exclusive_beat_downbeat_activation_data,
+)
 
 NumericOrSequence: TypeAlias = float | int | Sequence[float] | Sequence[int]
 
@@ -131,28 +135,26 @@ class DBNDownbeatTracker:
 
     def __call__(
         self,
-        beat_activations: np.ndarray,
-        downbeat_activations: np.ndarray,
+        activations: EventActivations[np.ndarray],
     ) -> np.ndarray:
         """
-        Detect downbeats from activations.
+        Detect downbeats from canonical runtime-tagged activations.
 
         Args:
-            beat_activations: Canonical all-beat activation function, including
-                downbeat probability.
-            downbeat_activations: Downbeat activation function
+            activations: Canonical ``[all beats, downbeat]`` activation data.
+                A bare ``(frames, 2)`` array is intentionally rejected because
+                it cannot be distinguished from decoder-exclusive
+                ``[beat-only, downbeat]`` data.
 
         Returns:
             Array of (time, beat_position) tuples
         """
-        beat = np.asarray(beat_activations, dtype=float)
-        downbeat = np.asarray(downbeat_activations, dtype=float)
-        if beat.ndim != 1 or downbeat.ndim != 1:
-            raise ValueError("DBN beat and downbeat activations must be 1-dimensional.")
-        if beat.shape != downbeat.shape:
-            raise ValueError(
-                "DBN beat and downbeat activations must have equal length."
-            )
+        canonical = require_event_activations(activations)
+        values = np.asarray(canonical.values, dtype=float)
+        if values.ndim != 2:
+            raise ValueError("DBN event activations must be a 2-dimensional array.")
+        beat = np.asarray(canonical.all_beats, dtype=float)
+        downbeat = np.asarray(canonical.downbeats, dtype=float)
         if not np.all(np.isfinite(beat)) or not np.all(np.isfinite(downbeat)):
             raise ValueError("DBN beat and downbeat activations must be finite.")
         if np.any(beat < 0) or np.any(beat > 1):
@@ -162,12 +164,11 @@ class DBNDownbeatTracker:
                 "DBN downbeat activations must be probabilities in [0, 1]."
             )
 
-        canonical = np.column_stack((beat, downbeat))
-        combined = event_activations_to_frame_class_activations(
+        exclusive = to_exclusive_beat_downbeat_activation_data(
             canonical,
             dtype=np.float64,
         )
-        combined = combined[:, :2]
+        combined = exclusive.values
         if np.any(np.sum(combined, axis=1) > 1.0 + 1e-6):
             raise ValueError(
                 "Exclusive DBN beat and downbeat probabilities must sum to at most 1."

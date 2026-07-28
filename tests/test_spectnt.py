@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import torch
 
-from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION, EventChannel
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventActivations,
+    EventChannel,
+    FrameClassActivations,
+)
 from mir_core.models import SpecTNT
 from mir_core.models.spectnt import ResFrontEnd
 
@@ -46,6 +52,8 @@ def test_spectnt_public_output_matches_beatnet_class_order() -> None:
     assert model.output_definition is FRAME_CLASS_DEFINITION
     assert model.event_activation_definition is EVENT_ACTIVATION_DEFINITION
     assert output["data_definition"] is FRAME_CLASS_DEFINITION
+    assert isinstance(output["activation_data"], FrameClassActivations)
+    assert isinstance(output["event_activation_data"], EventActivations)
     assert torch.equal(output["one_hot"][0, 0], torch.tensor([1.0, 0.0, 0.0]))
     assert torch.equal(output["one_hot"][0, 1], torch.tensor([0.0, 0.0, 1.0]))
     assert torch.allclose(

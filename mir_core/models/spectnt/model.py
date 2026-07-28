@@ -24,8 +24,9 @@ from mir_core.beats.schema import (
     FRAME_CLASS_DEFINITION,
     FRAME_CLASS_NAMES,
     EventChannel,
+    FrameClassActivations,
 )
-from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
+from mir_core.beats.tensor_converters import to_event_activation_data
 
 
 class Res2DMaxPoolModule(nn.Module):
@@ -322,7 +323,14 @@ Returns a dictionary with:
         activations = F.softmax(logits, dim=-1)
         classes = activations.argmax(dim=-1)
         one_hot = F.one_hot(classes, num_classes=3).to(activations.dtype)
-        event_activations = frame_class_activations_to_event_activations(activations)
+        frame_class_activation_data = FrameClassActivations(
+            activations,
+            definition=self.frame_class_definition,
+        )
+        event_activation_data = to_event_activation_data(
+            frame_class_activation_data
+        )
+        event_activations = event_activation_data.values
 
         return {
             "logits": logits,
@@ -332,6 +340,9 @@ Returns a dictionary with:
             "frame_class_activations": activations,
             "frame_classes": classes,
             "event_activations": event_activations,
+            "activation_data": frame_class_activation_data,
+            "frame_class_activation_data": frame_class_activation_data,
+            "event_activation_data": event_activation_data,
             "one_hot": one_hot,
             "class_order": self.class_order,
             "data_definition": self.output_definition,

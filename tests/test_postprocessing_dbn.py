@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mir_core.beats.schema import frame_class_activations_to_event_activations
+from mir_core.beats.schema import (
+    ActivationFormatMismatchError,
+    EventActivations,
+    frame_class_activations_to_event_activations,
+)
 from mir_core.postprocessing import dbn
 
 
@@ -94,10 +98,11 @@ def test_downbeat_tracker_converts_canonical_activations_to_madmom_probabilities
         _FakeProcessor,
     )
     tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
-    beat = np.asarray([0.9, 0.9])
-    downbeat = np.asarray([0.2, 0.8])
+    activations = EventActivations(
+        np.asarray([[0.9, 0.2], [0.9, 0.8]])
+    )
 
-    tracker(beat, downbeat)
+    tracker(activations)
 
     assert np.allclose(
         tracker.processor.activations,
@@ -120,7 +125,7 @@ def test_downbeat_tracker_preserves_frame_class_numerics_after_canonicalization(
     )
 
     events = frame_class_activations_to_event_activations(frame_classes)
-    tracker(events[:, 0], events[:, 1])
+    tracker(EventActivations(events))
 
     assert np.allclose(
         tracker.processor.activations,
@@ -139,4 +144,18 @@ def test_downbeat_tracker_rejects_invalid_probabilities(
     tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
 
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
-        tracker(np.asarray([1.2]), np.asarray([0.4]))
+        tracker(EventActivations(np.asarray([[1.2, 0.4]])))
+
+
+def test_downbeat_tracker_rejects_untagged_two_channel_arrays(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        dbn.madmom.features.downbeats,
+        "DBNDownBeatTrackingProcessor",
+        _FakeProcessor,
+    )
+    tracker = dbn.DBNDownbeatTracker(beats_per_bar=[2])
+
+    with pytest.raises(ActivationFormatMismatchError, match="untagged"):
+        tracker(np.asarray([[0.7, 0.2]]))

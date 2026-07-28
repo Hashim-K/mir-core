@@ -3,7 +3,19 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from mir_core.beats.schema import (
+    ActivationFormatMismatchError,
+    EventActivations,
+    ExclusiveBeatDownbeatActivations,
+    to_exclusive_beat_downbeat_activation_data,
+)
 from mir_core.postprocessing.state_space_1d import Heydari1DStateSpaceTracker
+
+
+def _decoder_activations(values: np.ndarray) -> ExclusiveBeatDownbeatActivations:
+    return to_exclusive_beat_downbeat_activation_data(
+        EventActivations(values)
+    )
 
 
 def test_heydari_1d_state_space_tracker_returns_event_rows() -> None:
@@ -13,7 +25,9 @@ def test_heydari_1d_state_space_tracker_returns_event_rows() -> None:
         activations[frame, 0] = 0.95
         activations[frame, 1] = 0.9 if index % 4 == 0 else 0.05
 
-    decoded = Heydari1DStateSpaceTracker(fps=fps)(activations)
+    decoded = Heydari1DStateSpaceTracker(fps=fps)(
+        _decoder_activations(activations)
+    )
 
     assert decoded.ndim == 2
     assert decoded.shape[1] == 4
@@ -25,7 +39,9 @@ def test_heydari_1d_state_space_tracker_returns_event_rows() -> None:
 def test_heydari_1d_state_space_tracker_handles_short_tracks() -> None:
     activations = np.zeros((10, 2), dtype=np.float32)
 
-    decoded = Heydari1DStateSpaceTracker(fps=50)(activations)
+    decoded = Heydari1DStateSpaceTracker(fps=50)(
+        _decoder_activations(activations)
+    )
 
     assert decoded.shape == (0, 4)
 
@@ -62,7 +78,7 @@ def test_heydari_1d_state_space_tracker_supports_peak_snap_options() -> None:
         peak_snap_window_frames=4,
         peak_snap_mode="causal",
         peak_snap_threshold=0.3,
-    )(activations)
+    )(_decoder_activations(activations))
 
     assert decoded.ndim == 2
     assert decoded.shape[1] == 4
@@ -82,7 +98,7 @@ def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
         peak_snap_mode="future",
     )
     decoded, emission_frames, frame_seconds = tracker.process_with_emission_frames(
-        activations
+        _decoder_activations(activations)
     )
 
     assert len(decoded) == len(emission_frames)
@@ -92,7 +108,14 @@ def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
     assert np.all(emission_frames >= event_frames)
 
     decoded, source_frames, emission_frames, _ = tracker.process_with_event_timing(
-        activations
+        _decoder_activations(activations)
     )
     assert len(decoded) == len(source_frames) == len(emission_frames)
     assert np.all(emission_frames >= source_frames)
+
+
+def test_heydari_1d_rejects_untagged_two_channel_arrays() -> None:
+    with pytest.raises(ActivationFormatMismatchError, match="untagged"):
+        Heydari1DStateSpaceTracker().process(
+            np.zeros((10, 2), dtype=np.float32)
+        )

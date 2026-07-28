@@ -16,8 +16,9 @@ from mir_core.beats.schema import (
     EVENT_ACTIVATION_DEFINITION,
     FRAME_CLASS_DEFINITION,
     EventChannel,
+    FrameClassActivations,
 )
-from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
+from mir_core.beats.tensor_converters import to_event_activation_data
 
 
 class BeatNetPlusBatch(nn.Module):
@@ -75,7 +76,14 @@ class BeatNetPlusBatch(nn.Module):
     def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         logits, latent = self._forward_impl(x)
         probs = F.softmax(logits, dim=-1)
-        event_activations = frame_class_activations_to_event_activations(probs)
+        frame_class_activation_data = FrameClassActivations(
+            probs,
+            definition=self.frame_class_definition,
+        )
+        event_activation_data = to_event_activation_data(
+            frame_class_activation_data
+        )
+        event_activations = event_activation_data.values
         return {
             "logits": logits,
             "latent": latent,
@@ -85,6 +93,9 @@ class BeatNetPlusBatch(nn.Module):
             "frame_class_activations": probs,
             "frame_classes": probs.argmax(dim=-1),
             "event_activations": event_activations,
+            "activation_data": frame_class_activation_data,
+            "frame_class_activation_data": frame_class_activation_data,
+            "event_activation_data": event_activation_data,
             "data_definition": self.output_definition,
         }
 
@@ -224,7 +235,14 @@ class BeatNetPlusDualBatch(nn.Module):
         main_logits, main_latent = self.main_branch._forward_impl(main_x)
         aux_logits, aux_latent = self.aux_branch._forward_impl(aux_x)
         probs = F.softmax(main_logits, dim=-1)
-        event_activations = frame_class_activations_to_event_activations(probs)
+        frame_class_activation_data = FrameClassActivations(
+            probs,
+            definition=self.frame_class_definition,
+        )
+        event_activation_data = to_event_activation_data(
+            frame_class_activation_data
+        )
+        event_activations = event_activation_data.values
         return {
             "logits": main_logits,
             "aux_logits": aux_logits,
@@ -236,6 +254,9 @@ class BeatNetPlusDualBatch(nn.Module):
             "frame_class_activations": probs,
             "frame_classes": probs.argmax(dim=-1),
             "event_activations": event_activations,
+            "activation_data": frame_class_activation_data,
+            "frame_class_activation_data": frame_class_activation_data,
+            "event_activation_data": event_activation_data,
             "data_definition": self.output_definition,
         }
 

@@ -16,6 +16,12 @@ from numpy.random import default_rng
 from madmom.features.beats_hmm import BarStateSpace, BarTransitionModel
 from madmom.ml.hmm import TransitionModel, ObservationModel
 
+from mir_core.beats.schema import (
+    ExclusiveBeatDownbeatActivations,
+    require_exclusive_beat_downbeat_activations,
+    to_exclusive_beat_downbeat_activation_data,
+)
+
 rng = default_rng()
 
 
@@ -238,30 +244,53 @@ class ParticleFilterTracker:
         ))
         self.beat = np.squeeze(self.st.first_states)
 
-    def process(self, activations: np.ndarray) -> np.ndarray:
+    def process(
+        self,
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
+    ) -> np.ndarray:
         """
         Run particle filtering over the given activation function to infer beats/downbeats.
 
         Args:
-            activations: numpy array, shape (num_frames, 2)
-                Activation function with probabilities corresponding to beats
-                and downbeats given in the first and second column, respectively.
+            activations: Tagged mutually-exclusive beat-only/downbeat
+                probabilities. Bare two-channel arrays are rejected because
+                they are ambiguous with canonical all-beat/downbeat data.
 
         Returns:
             numpy array, shape (num_beats, 2)
                 Detected (down-)beat positions [seconds] and beat numbers.
         """
+        supplied = require_exclusive_beat_downbeat_activations(activations)
+        exclusive = to_exclusive_beat_downbeat_activation_data(
+            supplied,
+            dtype=np.float64,
+        )
+        values = exclusive.values
+        if values.ndim != 2:
+            raise ValueError(
+                "Particle-filter activations must be a 2-dimensional array."
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Particle-filter activations must be finite.")
+        if np.any(values < 0.0) or np.any(values > 1.0):
+            raise ValueError(
+                "Particle-filter activations must be probabilities in [0, 1]."
+            )
+        if np.any(np.sum(values, axis=1) > 1.0 + 1e-6):
+            raise ValueError(
+                "Exclusive beat-only and downbeat probabilities must sum to "
+                "at most 1."
+            )
+
         # Applying the offset and information gate thresholds
-        activations = activations[int(self.offset / self.T):]
-        if np.shape(activations) == (2,):
-            activations = np.reshape(activations, (-1, 2))
-        both_activations = activations.copy()
-        activations = np.max(activations, axis=1)
-        activations[activations < self.ig_threshold] = 0.03
-        self.activations = activations
+        values = values[int(self.offset / self.T):]
+        both_activations = values.copy()
+        combined_activations = np.max(values, axis=1)
+        combined_activations[combined_activations < self.ig_threshold] = 0.03
+        self.activations = combined_activations
         self.both_activations = both_activations
 
-        for i in range(len(activations)):  # loop through the provided frame/s to infer beats/downbeats
+        for i in range(len(combined_activations)):  # loop through the provided frame/s to infer beats/downbeats
             self.counter += 1
             gathering = int(np.median(self.particles))  # calculating beat particles clutter
             # checking if the clutter is within the beat interval
@@ -293,7 +322,7 @@ class ParticleFilterTracker:
                     self.path = np.append(self.path, [[self.offset + self.counter * self.T, 1]], axis=0)
                     if self.beat_callback is not None:
                         self.beat_callback(True)
-                elif (activations[i] > 0.4):
+                elif (combined_activations[i] > 0.4):
                     self.path = np.append(self.path, [[self.offset + self.counter * self.T, 2]], axis=0)
                     if self.beat_callback is not None:
                         self.beat_callback(False)
@@ -309,12 +338,12 @@ class ParticleFilterTracker:
             self.particles = state
 
             # beat particles correction
-            obs = _beat_densities(activations[i], self.om, self.st)
-            if activations[i] > 0.1:  # resampling is done only when there is a meaningful activation
-                if activations[i] > 0.8:
+            obs = _beat_densities(combined_activations[i], self.om, self.st)
+            if combined_activations[i] > 0.1:  # resampling is done only when there is a meaningful activation
+                if combined_activations[i] > 0.8:
                     self.particles = np.append(self.particles, np.array([self.st.first_states[0][np.arange(np.random.randint(4), len(self.st.first_states[0]), 6)]]))
                 self.particles = _universal_resample(self.particles, obs[self.particles])  # beat correction
-                if activations[i] > 0.8:
+                if combined_activations[i] > 0.8:
                     np.delete(self.particles, np.random.choice(self.particle_size, len(self.st.first_states), replace=False))
 
         return self.path[1:]

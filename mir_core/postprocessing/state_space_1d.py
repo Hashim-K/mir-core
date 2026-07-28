@@ -12,6 +12,12 @@ from typing import Sequence
 
 import numpy as np
 
+from mir_core.beats.schema import (
+    ExclusiveBeatDownbeatActivations,
+    require_exclusive_beat_downbeat_activations,
+    to_exclusive_beat_downbeat_activation_data,
+)
+
 
 @dataclass
 class StateSpace1D:
@@ -144,7 +150,7 @@ def _renormalize(values: np.ndarray, scale: float = 0.8) -> np.ndarray:
 class Heydari1DStateSpaceTracker:
     """Joint beat/downbeat inference using Heydari's 1D state space.
 
-    Input activations must be shaped ``(frames, 2)`` with beat and downbeat
+    Input activations must be tagged mutually-exclusive beat-only/downbeat
     probabilities. The return value follows the reference package:
     ``(time_seconds, label, local_tempo_bpm, local_meter)``, where label ``1``
     marks downbeats and label ``2`` marks non-downbeat beats.
@@ -232,16 +238,22 @@ class Heydari1DStateSpaceTracker:
         self.om = ObservationModel1D(self.st, observation_lambda)
         self.om2 = ObservationModel1D(self.st2, downbeat_observation_lambda)
 
-    def __call__(self, activations: np.ndarray) -> np.ndarray:
+    def __call__(
+        self,
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
+    ) -> np.ndarray:
         return self.process(activations)
 
-    def process(self, activations: np.ndarray) -> np.ndarray:
+    def process(
+        self,
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
+    ) -> np.ndarray:
         decoded, _, _ = self.process_with_emission_frames(activations)
         return decoded
 
     def process_with_emission_frames(
         self,
-        activations: np.ndarray,
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Decode activations and expose causal emission frames and frame costs.
 
@@ -256,13 +268,32 @@ class Heydari1DStateSpaceTracker:
 
     def process_with_event_timing(
         self,
-        activations: np.ndarray,
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Decode events with source-activation and callback-emission frames."""
-        activations = np.asarray(activations, dtype=float)
-        if activations.ndim != 2 or activations.shape[1] < 2:
-            raise ValueError("Heydari1DStateSpaceTracker expects activations with shape (frames, 2).")
-        if activations.size == 0:
+        supplied = require_exclusive_beat_downbeat_activations(activations)
+        exclusive = to_exclusive_beat_downbeat_activation_data(
+            supplied,
+            dtype=np.float64,
+        )
+        values = exclusive.values
+        if values.ndim != 2:
+            raise ValueError(
+                "Heydari1DStateSpaceTracker expects a 2-dimensional "
+                "activation array."
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Heydari 1D activations must be finite.")
+        if np.any(values < 0.0) or np.any(values > 1.0):
+            raise ValueError(
+                "Heydari 1D activations must be probabilities in [0, 1]."
+            )
+        if np.any(np.sum(values, axis=1) > 1.0 + 1e-6):
+            raise ValueError(
+                "Exclusive beat-only and downbeat probabilities must sum to "
+                "at most 1."
+            )
+        if values.size == 0:
             return (
                 np.empty((0, 4), dtype=float),
                 np.empty(0, dtype=np.int64),
@@ -272,22 +303,22 @@ class Heydari1DStateSpaceTracker:
 
         frame_period = 1.0 / self.fps
         start_frame = int(self.offset / frame_period)
-        if start_frame >= len(activations):
+        if start_frame >= len(values):
             return (
                 np.empty((0, 4), dtype=float),
                 np.empty(0, dtype=np.int64),
                 np.empty(0, dtype=np.int64),
-                np.zeros(len(activations), dtype=float),
+                np.zeros(len(values), dtype=float),
             )
 
-        both_activations = activations[start_frame:, :2].copy()
+        both_activations = values[start_frame:].copy()
         beat_activations = np.max(both_activations, axis=1)
         beat_activations[beat_activations < self.ig_threshold] = 0.03
 
         output: list[list[float]] = []
         source_frames: list[int] = []
         emission_frames: list[int] = []
-        frame_seconds = np.zeros(len(activations), dtype=float)
+        frame_seconds = np.zeros(len(values), dtype=float)
         beat_distribution = np.ones(self.st.num_states, dtype=float) * 0.8
         if len(beat_distribution) > 5:
             beat_distribution[5] = 1.0
@@ -336,15 +367,15 @@ class Heydari1DStateSpaceTracker:
                 center = start_frame + frame_index - 1
                 if self.peak_snap_mode == "past":
                     lo = max(0, center - self.peak_snap_window_frames)
-                    hi = min(len(activations), center + 1)
+                    hi = min(len(values), center + 1)
                 elif self.peak_snap_mode == "future":
                     lo = max(0, center)
-                    hi = min(len(activations), center + self.peak_snap_window_frames + 1)
+                    hi = min(len(values), center + self.peak_snap_window_frames + 1)
                 else:
                     lo = max(0, center - self.peak_snap_window_frames)
-                    hi = min(len(activations), center + self.peak_snap_window_frames + 1)
+                    hi = min(len(values), center + self.peak_snap_window_frames + 1)
                 if hi > lo:
-                    local_strength = np.max(activations[lo:hi, :2], axis=1)
+                    local_strength = np.max(values[lo:hi], axis=1)
                     peak_offset = int(np.argmax(local_strength))
                     peak_strength = float(local_strength[peak_offset])
                     current_time = (lo + peak_offset) * frame_period

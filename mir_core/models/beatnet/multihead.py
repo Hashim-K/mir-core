@@ -14,8 +14,9 @@ from mir_core.beats.schema import (
     EVENT_ACTIVATION_DEFINITION,
     FRAME_CLASS_DEFINITION,
     EventChannel,
+    FrameClassActivations,
 )
-from mir_core.beats.tensor_converters import frame_class_activations_to_event_activations
+from mir_core.beats.tensor_converters import to_event_activation_data
 
 from .crnn import BeatNetBatch, _strip_prefix
 
@@ -112,7 +113,14 @@ class MultiHeadBeatNet(nn.Module):
         lstm_out, _ = head["lstm"](x_seq)
         logits = head["linear"](lstm_out)  # (batch, time, 3)
         probs = F.softmax(logits, dim=-1)
-        event_activations = frame_class_activations_to_event_activations(probs)
+        frame_class_activation_data = FrameClassActivations(
+            probs,
+            definition=self.frame_class_definition,
+        )
+        event_activation_data = to_event_activation_data(
+            frame_class_activation_data
+        )
+        event_activations = event_activation_data.values
         beats = event_activations[:, :, int(EventChannel.beat)]
         downbeats = event_activations[:, :, int(EventChannel.downbeat)]
         return {
@@ -122,6 +130,9 @@ class MultiHeadBeatNet(nn.Module):
             "frame_class_activations": probs,
             "frame_classes": probs.argmax(dim=-1),
             "event_activations": event_activations,
+            "activation_data": frame_class_activation_data,
+            "frame_class_activation_data": frame_class_activation_data,
+            "event_activation_data": event_activation_data,
             "data_definition": self.output_definition,
         }
 

@@ -42,10 +42,14 @@ from typing import Any, List, Dict, Tuple
 import torch
 import torch.nn as nn
 
-from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventActivations,
+)
 from mir_core.beats.tensor_converters import (
-    event_activations_to_frame_class_activations,
     event_activations_to_frame_classes,
+    to_frame_class_activation_data,
 )
 
 
@@ -332,13 +336,23 @@ class BockTCN(nn.Module):
 
         downbeats_for_event = outputs.get("downbeats", torch.zeros_like(beats))
         event_activations = torch.cat((beats, downbeats_for_event), dim=-1)
+        event_activation_data = EventActivations(
+            event_activations,
+            definition=self.event_activation_definition,
+            downbeats_available=self.include_downbeats,
+        )
+        frame_class_activation_data = to_frame_class_activation_data(
+            event_activation_data,
+            target_definition=self.frame_class_definition,
+        )
         outputs.update(
             {
                 "event_activations": event_activations,
-                "frame_class_activations": event_activations_to_frame_class_activations(
-                    event_activations
-                ),
+                "frame_class_activations": frame_class_activation_data.values,
                 "frame_classes": event_activations_to_frame_classes(event_activations),
+                "activation_data": event_activation_data,
+                "event_activation_data": event_activation_data,
+                "frame_class_activation_data": frame_class_activation_data,
                 "data_definition": self.output_definition,
             }
         )

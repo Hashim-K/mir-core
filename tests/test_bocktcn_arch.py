@@ -1,6 +1,10 @@
 """Verify BockTCN's Davies & Böck 2019-aligned frontend behavior."""
 import torch
-from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    EventActivations,
+    FrameClassActivations,
+)
 from mir_core.models.bock_tcn.tcn import BockTCN
 
 
@@ -19,6 +23,10 @@ def test_output_shape_beat_only():
     assert out["event_activations"].shape == (2, 196, 2)
     assert out["frame_class_activations"].shape == (2, 196, 3)
     assert out["frame_classes"].shape == (2, 196)
+    assert isinstance(out["activation_data"], EventActivations)
+    assert isinstance(out["event_activation_data"], EventActivations)
+    assert isinstance(out["frame_class_activation_data"], FrameClassActivations)
+    assert out["event_activation_data"].downbeats_available is False
     # time axis shrinks by 4 (2 frames lost per 3×3 valid conv × 2 layers)
     assert out["beats"].shape[1] == 196
 

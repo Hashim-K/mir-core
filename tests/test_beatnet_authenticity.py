@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from mir_core.beats.schema import EVENT_ACTIVATION_DEFINITION, FRAME_CLASS_DEFINITION, EventChannel, FrameClass
+from mir_core.beats.schema import (
+    EVENT_ACTIVATION_DEFINITION,
+    FRAME_CLASS_DEFINITION,
+    EventActivations,
+    EventChannel,
+    FrameClass,
+    FrameClassActivations,
+)
 from mir_core.models.beatnet.crnn import BeatNetBatch, BeatNetCRNN
 from mir_core.models.beatnet.beatnet_plus import (
     BeatNetPlusBatch,
@@ -65,6 +72,10 @@ def test_beatnet_uses_official_output_class_order():
     assert output["event_activations"].shape == (2, 5, 2)
     assert output["frame_class_activations"].shape == (2, 5, 3)
     assert output["frame_classes"].shape == (2, 5)
+    assert isinstance(output["activation_data"], FrameClassActivations)
+    assert isinstance(output["frame_class_activation_data"], FrameClassActivations)
+    assert isinstance(output["event_activation_data"], EventActivations)
+    assert output["event_activation_data"].values is output["event_activations"]
     expected_all_beats = (
         expected[int(FrameClass.beat)] + expected[int(FrameClass.downbeat)]
     )

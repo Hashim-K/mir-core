@@ -1,6 +1,13 @@
 import numpy as np
 import pytest
 
+from mir_core.beats.schema import (
+    ActivationFormatMismatchError,
+    BeatActivationFormat,
+    BeatDataDefinition,
+    ExclusiveBeatDownbeatActivations,
+    ExclusiveBeatDownbeatChannel,
+)
 from mir_core.postprocessing import ParticleFilterTracker
 
 
@@ -13,8 +20,63 @@ def test_particle_filter_accepts_two_channel_activations_at_fractional_fps() -> 
         num_tempi=30,
     )
 
-    decoded = tracker.process(np.zeros((4, 2), dtype=np.float32))
+    decoded = tracker.process(
+        ExclusiveBeatDownbeatActivations(
+            np.zeros((4, 2), dtype=np.float32)
+        )
+    )
 
     assert tracker.fps == pytest.approx(fps)
     assert tracker.T == pytest.approx(1 / fps)
     assert decoded.shape == (0, 2)
+
+
+def test_particle_filter_rejects_untagged_two_channel_arrays() -> None:
+    tracker = ParticleFilterTracker(
+        particle_size=100,
+        down_particle_size=20,
+        num_tempi=30,
+    )
+
+    with pytest.raises(ActivationFormatMismatchError, match="untagged"):
+        tracker.process(np.zeros((4, 2), dtype=np.float32))
+
+
+def test_particle_filter_rejects_nonexclusive_probability_rows() -> None:
+    tracker = ParticleFilterTracker(
+        particle_size=100,
+        down_particle_size=20,
+        num_tempi=30,
+    )
+
+    with pytest.raises(ValueError, match="sum to at most 1"):
+        tracker.process(
+            ExclusiveBeatDownbeatActivations(
+                np.asarray([[0.9, 0.2]], dtype=np.float32)
+            )
+        )
+
+
+def test_particle_filter_normalizes_declared_exclusive_channel_order() -> None:
+    tracker = ParticleFilterTracker(
+        particle_size=100,
+        down_particle_size=20,
+        num_tempi=30,
+    )
+    downbeat_first = BeatDataDefinition(
+        representation=BeatActivationFormat.exclusive_beat_downbeat,
+        order=(
+            ExclusiveBeatDownbeatChannel.downbeat,
+            ExclusiveBeatDownbeatChannel.beat_only,
+        ),
+        names=("downbeat", "beat_only"),
+    )
+
+    tracker.process(
+        ExclusiveBeatDownbeatActivations(
+            np.asarray([[0.2, 0.7]], dtype=np.float32),
+            definition=downbeat_first,
+        )
+    )
+
+    assert np.allclose(tracker.both_activations, [[0.7, 0.2]])
