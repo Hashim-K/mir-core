@@ -181,6 +181,14 @@ class Heydari1DStateSpaceTracker:
         peak_snap_mode: str = "center",
         peak_snap_threshold: float | None = None,
     ) -> None:
+        lambda_b = float(lambda_b)
+        lambda_d = float(lambda_d)
+        for name, value in (("lambda_b", lambda_b), ("lambda_d", lambda_d)):
+            if not np.isfinite(value) or not 0.0 < value < 1.0:
+                raise ValueError(
+                    f"{name} must be finite and strictly between 0 and 1."
+                )
+
         self.fps = int(fps)
         self.min_bpm = float(min_bpm)
         self.max_bpm = float(max_bpm)
@@ -213,12 +221,12 @@ class Heydari1DStateSpaceTracker:
         self.st = BeatStateSpace1D(
             min_interval=min_interval,
             max_interval=max_interval,
-            alpha=float(lambda_b),
+            alpha=lambda_b,
         )
         self.st2 = DownbeatStateSpace1D(
             min_beats_per_bar=int(min_beats_per_bar),
             max_beats_per_bar=int(max_beats_per_bar),
-            alpha=float(lambda_d),
+            alpha=lambda_d,
             meter=self.beats_per_bar,
         )
         self.om = ObservationModel1D(self.st, observation_lambda)

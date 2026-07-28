@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from mir_core.postprocessing.state_space_1d import Heydari1DStateSpaceTracker
 
@@ -27,6 +28,22 @@ def test_heydari_1d_state_space_tracker_handles_short_tracks() -> None:
     decoded = Heydari1DStateSpaceTracker(fps=50)(activations)
 
     assert decoded.shape == (0, 4)
+
+
+@pytest.mark.parametrize("parameter", ["lambda_b", "lambda_d"])
+@pytest.mark.parametrize(
+    "value",
+    [0.0, 1.0, -0.01, 60.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_heydari_1d_rejects_invalid_jump_reward_lambda(
+    parameter: str,
+    value: float,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"{parameter} must be finite and strictly between 0 and 1",
+    ):
+        Heydari1DStateSpaceTracker(**{parameter: value})
 
 
 def test_heydari_1d_state_space_tracker_supports_peak_snap_options() -> None:
