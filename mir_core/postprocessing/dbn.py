@@ -1,5 +1,4 @@
-"""
-Dynamic Bayesian Network (DBN) beat trackers via madmom.
+"""Dynamic Bayesian Network (DBN) beat trackers via madmom.
 
 Classes:
     DBNBeatTracker     — beat tracking from 1D activation (wraps madmom DBN).
@@ -7,10 +6,13 @@ Classes:
     DBNBarTracker      — bar (meter) tracking from beat times + downbeat activations.
 """
 
-from typing import Optional, Tuple, List
+from collections.abc import Sequence
+from typing import TypeAlias
 
-import numpy as np
 import madmom
+import numpy as np
+
+NumericOrSequence: TypeAlias = float | int | Sequence[float] | Sequence[int]
 
 
 class DBNBeatTracker:
@@ -24,9 +26,13 @@ class DBNBeatTracker:
         min_bpm: Minimum tempo in BPM
         max_bpm: Maximum tempo in BPM
         fps: Frames per second of activation function
+        num_tempi: Number of tempo states. ``None`` uses linear spacing.
         transition_lambda: Transition distribution concentration
+        observation_lambda: Fraction of each beat interval assigned to beat states
         threshold: Beat detection threshold
+        correct: Align decoded beats to local activation peaks
         online: Whether to use online (causal) processing
+        num_threads: Decoder worker threads
     """
 
     def __init__(
@@ -34,17 +40,25 @@ class DBNBeatTracker:
         min_bpm: float = 55.0,
         max_bpm: float = 215.0,
         fps: int = 100,
+        num_tempi: int | None = None,
         transition_lambda: float = 100.0,
+        observation_lambda: int = 16,
         threshold: float = 0.05,
+        correct: bool = True,
         online: bool = False,
+        num_threads: int = 1,
     ):
         self.processor = madmom.features.beats.DBNBeatTrackingProcessor(
             min_bpm=min_bpm,
             max_bpm=max_bpm,
             fps=fps,
+            num_tempi=num_tempi,
             transition_lambda=transition_lambda,
+            observation_lambda=observation_lambda,
             threshold=threshold,
+            correct=correct,
             online=online,
+            num_threads=num_threads,
         )
         self.fps = fps
 
@@ -75,48 +89,94 @@ class DBNDownbeatTracker:
         min_bpm: Minimum tempo in BPM
         max_bpm: Maximum tempo in BPM
         fps: Frames per second
+        num_tempi: Number of tempo states, optionally specified per meter
         transition_lambda: Transition distribution concentration
+        observation_lambda: Fraction of each beat interval assigned to beat states
+        threshold: Trim leading/trailing regions below this activation level
+        correct: Align decoded events to local activation peaks
+        num_threads: Number of meters decoded in parallel
+        beat_activations_include_downbeats: Whether the first input channel
+            includes downbeat probability. Event-activation models normally do;
+            mutually exclusive frame-class models such as BeatNet do not.
     """
 
     def __init__(
         self,
-        beats_per_bar: Optional[List[int]] = None,
-        min_bpm: float = 55.0,
-        max_bpm: float = 215.0,
+        beats_per_bar: Sequence[int] | None = None,
+        min_bpm: NumericOrSequence = 55.0,
+        max_bpm: NumericOrSequence = 215.0,
         fps: int = 100,
-        transition_lambda: float = 100.0,
+        num_tempi: int | Sequence[int] = 60,
+        transition_lambda: NumericOrSequence = 100.0,
+        observation_lambda: int = 16,
+        threshold: float = 0.05,
+        correct: bool = True,
+        num_threads: int = 1,
+        beat_activations_include_downbeats: bool = True,
     ):
         if beats_per_bar is None:
             beats_per_bar = [3, 4]
+        beats_per_bar = list(beats_per_bar)
         self.processor = madmom.features.downbeats.DBNDownBeatTrackingProcessor(
             beats_per_bar=beats_per_bar,
             min_bpm=min_bpm,
             max_bpm=max_bpm,
             fps=fps,
+            num_tempi=num_tempi,
             transition_lambda=transition_lambda,
+            observation_lambda=observation_lambda,
+            threshold=threshold,
+            correct=correct,
+            num_threads=num_threads,
         )
         self.fps = fps
+        self.beat_activations_include_downbeats = bool(
+            beat_activations_include_downbeats
+        )
 
     def __call__(
         self,
         beat_activations: np.ndarray,
-        downbeat_activations: np.ndarray
+        downbeat_activations: np.ndarray,
     ) -> np.ndarray:
         """
         Detect downbeats from activations.
 
         Args:
-            beat_activations: Beat activation function
+            beat_activations: Beat activation function. Its inclusion of
+                downbeats is controlled by ``beat_activations_include_downbeats``.
             downbeat_activations: Downbeat activation function
 
         Returns:
             Array of (time, beat_position) tuples
         """
-        # Combine activations: [beat-only, downbeat]
-        combined = np.vstack((
-            np.maximum(beat_activations - downbeat_activations, 0),
-            downbeat_activations
-        )).T
+        beat = np.asarray(beat_activations, dtype=float)
+        downbeat = np.asarray(downbeat_activations, dtype=float)
+        if beat.ndim != 1 or downbeat.ndim != 1:
+            raise ValueError("DBN beat and downbeat activations must be 1-dimensional.")
+        if beat.shape != downbeat.shape:
+            raise ValueError(
+                "DBN beat and downbeat activations must have equal length."
+            )
+        if not np.all(np.isfinite(beat)) or not np.all(np.isfinite(downbeat)):
+            raise ValueError("DBN beat and downbeat activations must be finite.")
+        if np.any(beat < 0) or np.any(beat > 1):
+            raise ValueError("DBN beat activations must be probabilities in [0, 1].")
+        if np.any(downbeat < 0) or np.any(downbeat > 1):
+            raise ValueError(
+                "DBN downbeat activations must be probabilities in [0, 1]."
+            )
+
+        beat_only = (
+            np.maximum(beat - downbeat, 0.0)
+            if self.beat_activations_include_downbeats
+            else beat
+        )
+        combined = np.column_stack((beat_only, downbeat))
+        if np.any(np.sum(combined, axis=1) > 1.0 + 1e-6):
+            raise ValueError(
+                "Exclusive DBN beat and downbeat probabilities must sum to at most 1."
+            )
 
         return self.processor(combined)
 
@@ -135,7 +195,7 @@ class DBNBarTracker:
 
     def __init__(
         self,
-        beats_per_bar: Tuple[int, ...] = (3, 4),
+        beats_per_bar: tuple[int, ...] = (3, 4),
         meter_change_prob: float = 1e-3,
         observation_weight: float = 4.0,
     ):
