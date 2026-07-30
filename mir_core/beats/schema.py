@@ -65,6 +65,33 @@ class BeatDataRepresentation(str, Enum):
     exclusive_beat_downbeat = "exclusive_beat_downbeat"
 
 
+class BeatTargetSupervision(str, Enum):
+    """Beat-related tasks for which an annotation supplies ground truth.
+
+    ``beats_only`` means that every annotated event is known to be a beat, but
+    its metrical position is unknown. It must not be interpreted as the
+    mutually-exclusive :class:`FrameClass.beat_only` class.
+    """
+
+    beats_only = "beats_only"
+    beats_and_downbeats = "beats_and_downbeats"
+
+    @property
+    def downbeats_available(self) -> bool:
+        """Whether downbeat targets are valid for this supervision mode."""
+        return self is BeatTargetSupervision.beats_and_downbeats
+
+    @classmethod
+    def from_downbeats_available(
+        cls,
+        available: bool,
+    ) -> BeatTargetSupervision:
+        """Construct an explicit supervision mode from annotation availability."""
+        if not isinstance(available, bool):
+            raise TypeError("Downbeat availability must be a boolean.")
+        return cls.beats_and_downbeats if available else cls.beats_only
+
+
 # Public semantic name for new code; retain BeatDataRepresentation as an alias
 # used by existing configs and imports.
 BeatActivationFormat = BeatDataRepresentation
@@ -1020,6 +1047,7 @@ __all__ = [
     "BeatActivationFormat",
     "BeatDataDefinition",
     "BeatDataRepresentation",
+    "BeatTargetSupervision",
     "EventChannel",
     "EventActivations",
     "ExclusiveBeatDownbeatActivations",

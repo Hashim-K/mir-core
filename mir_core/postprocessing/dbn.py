@@ -45,7 +45,7 @@ class DBNBeatTracker:
         self,
         min_bpm: float = 55.0,
         max_bpm: float = 215.0,
-        fps: int = 100,
+        fps: float = 100.0,
         num_tempi: int | None = None,
         transition_lambda: float = 100.0,
         observation_lambda: int = 16,
@@ -54,6 +54,7 @@ class DBNBeatTracker:
         online: bool = False,
         num_threads: int = 1,
     ):
+        fps = float(fps)
         self.processor = madmom.features.beats.DBNBeatTrackingProcessor(
             min_bpm=min_bpm,
             max_bpm=max_bpm,
@@ -108,7 +109,7 @@ class DBNDownbeatTracker:
         beats_per_bar: Sequence[int] | None = None,
         min_bpm: NumericOrSequence = 55.0,
         max_bpm: NumericOrSequence = 215.0,
-        fps: int = 100,
+        fps: float = 100.0,
         num_tempi: int | Sequence[int] = 60,
         transition_lambda: NumericOrSequence = 100.0,
         observation_lambda: int = 16,
@@ -116,6 +117,7 @@ class DBNDownbeatTracker:
         correct: bool = True,
         num_threads: int = 1,
     ):
+        fps = float(fps)
         if beats_per_bar is None:
             beats_per_bar = [3, 4]
         beats_per_bar = list(beats_per_bar)
@@ -205,7 +207,7 @@ class DBNBarTracker:
         self,
         beat_times: np.ndarray,
         downbeat_activations: np.ndarray,
-        fps: int = 100,
+        fps: float = 100.0,
     ) -> np.ndarray:
         """
         Track bars from beat times and downbeat activations.

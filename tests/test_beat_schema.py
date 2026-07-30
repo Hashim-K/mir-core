@@ -16,6 +16,7 @@ from mir_core.beats.schema import (
     BeatActivationFormat,
     BeatDataDefinition,
     BeatDataRepresentation,
+    BeatTargetSupervision,
     EventActivations,
     EventChannel,
     ExclusiveBeatDownbeatActivations,
@@ -64,6 +65,18 @@ def test_beat_schema_orders_are_explicit() -> None:
         EXCLUSIVE_BEAT_DOWNBEAT_DEFINITION.representation
         is BeatActivationFormat.exclusive_beat_downbeat
     )
+
+
+def test_target_supervision_distinguishes_unknown_from_negative_downbeats() -> None:
+    beats_only = BeatTargetSupervision.from_downbeats_available(False)
+    joint = BeatTargetSupervision.from_downbeats_available(True)
+
+    assert beats_only is BeatTargetSupervision.beats_only
+    assert not beats_only.downbeats_available
+    assert joint is BeatTargetSupervision.beats_and_downbeats
+    assert joint.downbeats_available
+    with pytest.raises(TypeError, match="boolean"):
+        BeatTargetSupervision.from_downbeats_available(0)  # type: ignore[arg-type]
 
 
 def test_frame_classes_convert_to_event_activations() -> None:

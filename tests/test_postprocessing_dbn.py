@@ -10,6 +10,8 @@ from mir_core.beats.schema import (
 )
 from mir_core.postprocessing import dbn
 
+BEAST_FPS = 44100 / 1024
+
 
 class _FakeProcessor:
     def __init__(self, **kwargs):
@@ -31,7 +33,7 @@ def test_beat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
     tracker = dbn.DBNBeatTracker(
         min_bpm=70,
         max_bpm=180,
-        fps=50,
+        fps=BEAST_FPS,
         num_tempi=90,
         transition_lambda=50,
         observation_lambda=8,
@@ -44,7 +46,7 @@ def test_beat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
     assert tracker.processor.kwargs == {
         "min_bpm": 70,
         "max_bpm": 180,
-        "fps": 50,
+        "fps": BEAST_FPS,
         "num_tempi": 90,
         "transition_lambda": 50,
         "observation_lambda": 8,
@@ -53,6 +55,7 @@ def test_beat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
         "online": True,
         "num_threads": 2,
     }
+    assert tracker.fps == pytest.approx(BEAST_FPS)
 
 
 def test_downbeat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
@@ -66,7 +69,7 @@ def test_downbeat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
         beats_per_bar=[2, 4],
         min_bpm=[65, 70],
         max_bpm=[160, 180],
-        fps=50,
+        fps=BEAST_FPS,
         num_tempi=[30, 60],
         transition_lambda=[25, 100],
         observation_lambda=8,
@@ -79,7 +82,7 @@ def test_downbeat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
         "beats_per_bar": [2, 4],
         "min_bpm": [65, 70],
         "max_bpm": [160, 180],
-        "fps": 50,
+        "fps": BEAST_FPS,
         "num_tempi": [30, 60],
         "transition_lambda": [25, 100],
         "observation_lambda": 8,
@@ -87,6 +90,22 @@ def test_downbeat_tracker_exposes_accuracy_parameters(monkeypatch) -> None:
         "correct": False,
         "num_threads": 2,
     }
+    assert tracker.fps == pytest.approx(BEAST_FPS)
+
+
+def test_real_madmom_dbn_processors_accept_fractional_fps() -> None:
+    beat_tracker = dbn.DBNBeatTracker(
+        fps=BEAST_FPS,
+        num_tempi=60,
+    )
+    downbeat_tracker = dbn.DBNDownbeatTracker(
+        beats_per_bar=[4],
+        fps=BEAST_FPS,
+        num_tempi=60,
+    )
+
+    assert beat_tracker.processor.fps == pytest.approx(BEAST_FPS)
+    assert downbeat_tracker.processor.fps == pytest.approx(BEAST_FPS)
 
 
 def test_downbeat_tracker_converts_canonical_activations_to_madmom_probabilities(
