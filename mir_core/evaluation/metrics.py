@@ -9,6 +9,8 @@ Wraps mir_eval library and adds additional metrics following:
 Functions:
     compute_beat_metrics     — all mir_eval beat metrics for a single track (70ms default).
     compute_downbeat_metrics — downbeat metrics for a single track.
+    compute_event_timing_errors — signed errors for one-to-one matched events.
+    compute_event_timing_error_stats — millisecond timing-error diagnostics.
     evaluate_beats           — aggregate metrics across multiple tracks.
     evaluate_downbeats       — aggregate downbeat metrics.
     evaluate_tempo           — tempo evaluation with Acc1/Acc2.
@@ -171,6 +173,103 @@ def ibi_distribution_text(
 
 
 # =============================================================================
+# Matched-Event Timing Error
+# =============================================================================
+
+
+def compute_event_timing_errors(
+    events_pred: np.ndarray,
+    events_ann: np.ndarray,
+    tolerance: float = 0.07,
+) -> np.ndarray:
+    """Return signed errors for the one-to-one event matches used by F-measure.
+
+    The matching is maximum-cardinality and one-to-one within ``tolerance``,
+    using :func:`mir_eval.util.match_events`.  Returned values are in seconds
+    and follow ``prediction - annotation``: negative values are early and
+    positive values are late.  Unmatched predictions and annotations are not
+    represented here; precision, recall, or F-measure must be inspected beside
+    this conditional timing diagnostic.
+    """
+
+    tolerance = float(tolerance)
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be a positive finite number of seconds")
+    predicted = np.sort(np.asarray(events_pred, dtype=float).reshape(-1))
+    annotated = np.sort(np.asarray(events_ann, dtype=float).reshape(-1))
+    predicted = predicted[np.isfinite(predicted)]
+    annotated = annotated[np.isfinite(annotated)]
+    if not len(predicted) or not len(annotated):
+        return np.empty(0, dtype=float)
+    matches = mir_eval.util.match_events(annotated, predicted, tolerance)
+    return np.asarray(
+        [
+            predicted[pred_index] - annotated[ann_index]
+            for ann_index, pred_index in matches
+        ],
+        dtype=float,
+    )
+
+
+def compute_event_timing_error_stats(
+    events_pred: np.ndarray,
+    events_ann: np.ndarray,
+    tolerance: float = 0.07,
+) -> Dict[str, float]:
+    """Summarize matched-event timing errors in milliseconds.
+
+    ``timing_error_mae_ms`` is the main answer to "how many milliseconds is
+    the event off by?"  ``timing_error_mean_ms`` retains direction and is the
+    signed timing bias.  All error statistics are conditional on matched
+    events inside the tolerance window.
+    """
+
+    predicted = np.asarray(events_pred, dtype=float).reshape(-1)
+    annotated = np.asarray(events_ann, dtype=float).reshape(-1)
+    predicted_count = int(np.count_nonzero(np.isfinite(predicted)))
+    annotated_count = int(np.count_nonzero(np.isfinite(annotated)))
+    errors_ms = 1000.0 * compute_event_timing_errors(
+        predicted,
+        annotated,
+        tolerance=tolerance,
+    )
+    matched = int(len(errors_ms))
+    empty = {
+        "timing_error_mean_ms": 0.0,
+        "timing_error_std_ms": 0.0,
+        "timing_error_mae_ms": 0.0,
+        "timing_error_std_absolute_ms": 0.0,
+        "timing_error_median_absolute_ms": 0.0,
+        "timing_error_p95_absolute_ms": 0.0,
+        "timing_error_p99_absolute_ms": 0.0,
+        "timing_matched": float(matched),
+        "timing_matched_reference_fraction": (
+            float(matched / annotated_count) if annotated_count else 0.0
+        ),
+        "timing_matched_prediction_fraction": (
+            float(matched / predicted_count) if predicted_count else 0.0
+        ),
+    }
+    if not matched:
+        return empty
+    absolute_errors_ms = np.abs(errors_ms)
+    return {
+        **empty,
+        "timing_error_mean_ms": float(np.mean(errors_ms)),
+        "timing_error_std_ms": float(np.std(errors_ms)),
+        "timing_error_mae_ms": float(np.mean(absolute_errors_ms)),
+        "timing_error_std_absolute_ms": float(np.std(absolute_errors_ms)),
+        "timing_error_median_absolute_ms": float(np.median(absolute_errors_ms)),
+        "timing_error_p95_absolute_ms": float(
+            np.percentile(absolute_errors_ms, 95)
+        ),
+        "timing_error_p99_absolute_ms": float(
+            np.percentile(absolute_errors_ms, 99)
+        ),
+    }
+
+
+# =============================================================================
 # Core Evaluation Functions (wrapping mir_eval)
 # =============================================================================
 
@@ -202,6 +301,13 @@ def compute_beat_metrics(
     beats_ann = np.sort(np.asarray(beats_ann, dtype=float))
 
     metrics: Dict[str, float] = {}
+    metrics.update(
+        compute_event_timing_error_stats(
+            beats_pred,
+            beats_ann,
+            tolerance=tolerance,
+        )
+    )
 
     # Handle empty predictions/annotations while keeping a uniform schema.
     if len(beats_pred) == 0 or len(beats_ann) == 0:

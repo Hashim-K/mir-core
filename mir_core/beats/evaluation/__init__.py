@@ -6,6 +6,7 @@ task-scoped imports:
 
     from mir_core.beats.evaluation import compute_beat_metrics
 """
+
 import importlib.util
 import pathlib
 
@@ -27,6 +28,8 @@ _spec.loader.exec_module(_mod)
 
 compute_beat_metrics = _mod.compute_beat_metrics
 compute_downbeat_metrics = _mod.compute_downbeat_metrics
+compute_event_timing_errors = _mod.compute_event_timing_errors
+compute_event_timing_error_stats = _mod.compute_event_timing_error_stats
 evaluate_beats = _mod.evaluate_beats
 evaluate_downbeats = _mod.evaluate_downbeats
 compute_per_track_metrics = _mod.compute_per_track_metrics
@@ -36,6 +39,8 @@ compute_count_tempo_diagnostics = _mod.compute_count_tempo_diagnostics
 __all__ = [
     "compute_beat_metrics",
     "compute_downbeat_metrics",
+    "compute_event_timing_errors",
+    "compute_event_timing_error_stats",
     "evaluate_beats",
     "evaluate_downbeats",
     "compute_per_track_metrics",

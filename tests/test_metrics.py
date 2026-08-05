@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from mir_core.evaluation.metrics import compute_beat_metrics, compute_ibi_stats
+from mir_core.evaluation.metrics import (
+    compute_beat_metrics,
+    compute_event_timing_error_stats,
+    compute_event_timing_errors,
+    compute_ibi_stats,
+)
 
 
 def test_compute_ibi_stats_includes_tempo_and_variability() -> None:
@@ -30,6 +36,26 @@ def test_compute_beat_metrics_includes_diagnostics() -> None:
     assert metrics["tempo_ann_bpm"] == 120.0
     assert "ibi_median" in metrics
     assert "ibi_ann_median" in metrics
+
+
+def test_event_timing_errors_are_signed_one_to_one_matches() -> None:
+    annotated = np.array([0.1, 0.6, 1.1, 1.6])
+    predicted = np.array([0.090, 0.620, 1.300, 1.590])
+
+    errors = compute_event_timing_errors(predicted, annotated, tolerance=0.07)
+    stats = compute_event_timing_error_stats(predicted, annotated, tolerance=0.07)
+
+    assert len(errors) == 3
+    assert errors * 1000.0 == pytest.approx([-10.0, 20.0, -10.0])
+    assert stats["timing_error_mean_ms"] == pytest.approx(0.0)
+    assert stats["timing_error_mae_ms"] == pytest.approx(40.0 / 3.0)
+    assert stats["timing_error_std_absolute_ms"] == pytest.approx(
+        np.std([10.0, 20.0, 10.0])
+    )
+    assert stats["timing_error_p95_absolute_ms"] == pytest.approx(19.0)
+    assert stats["timing_error_p99_absolute_ms"] == pytest.approx(19.8)
+    assert stats["timing_matched_reference_fraction"] == pytest.approx(0.75)
+    assert stats["timing_matched_prediction_fraction"] == pytest.approx(0.75)
 
 
 def test_compute_beat_metrics_empty_case_uses_full_schema() -> None:
