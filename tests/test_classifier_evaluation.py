@@ -7,6 +7,7 @@ import torch
 from mir_core.classifier.evaluation import (
     accuracy,
     apply_temperature,
+    classification_diagnostics,
     confusion_matrix,
     expected_calibration_error,
     fit_temperature,
@@ -51,6 +52,49 @@ def test_metrics_accept_one_hot_targets_and_explicit_absent_class() -> None:
     assert macro_f1(predictions, targets, num_classes=4) == pytest.approx(
         (1.0 + 2.0 / 3.0 + 0.0 + 0.0) / 4.0
     )
+
+
+def test_classification_diagnostics_are_detailed_and_json_safe() -> None:
+    probabilities = np.asarray(
+        [
+            [0.90, 0.05, 0.05],
+            [0.20, 0.70, 0.10],
+            [0.10, 0.60, 0.30],
+            [0.10, 0.20, 0.70],
+        ]
+    )
+    report = classification_diagnostics(
+        probabilities,
+        [0, 1, 2, 2],
+        class_names=["candombe", "salsa", "other"],
+        calibration_bins=5,
+    )
+
+    assert report["accuracy"] == pytest.approx(0.75)
+    assert report["balanced_accuracy"] == pytest.approx((1.0 + 1.0 + 0.5) / 3.0)
+    assert report["labels"] == ["candombe", "salsa", "other"]
+    assert report["averages"]["micro"]["f1"] == pytest.approx(0.75)
+    assert report["averages"]["macro"]["roc_auc"] is not None
+    assert report["averages"]["macro"]["average_precision"] is not None
+    assert report["per_class"][2]["support"] == 2
+    assert report["per_class"][2]["recall"] == pytest.approx(0.5)
+    assert len(report["calibration_bins"]) == 5
+    assert report["confusion"] == [[1, 0, 0], [0, 1, 0], [0, 1, 1]]
+    assert report["confusion_normalized"][2] == pytest.approx([0.0, 0.5, 0.5])
+
+
+def test_classification_diagnostics_marks_undefined_ranking_metrics() -> None:
+    report = classification_diagnostics(
+        [[0.8, 0.1, 0.1], [0.7, 0.2, 0.1]],
+        [0, 0],
+        class_names=["present", "absent-a", "absent-b"],
+    )
+
+    assert report["per_class"][0]["roc_auc"] is None
+    assert report["per_class"][0]["average_precision"] == pytest.approx(1.0)
+    assert report["per_class"][1]["roc_auc"] is None
+    assert report["per_class"][1]["average_precision"] is None
+    assert report["averages"]["macro"]["roc_auc"] is None
 
 
 @pytest.mark.parametrize(

@@ -10,12 +10,13 @@ from .calibration import (
     select_routing_threshold,
     softmax_probabilities,
 )
-from .metrics import accuracy, confusion_matrix, macro_f1
+from .metrics import accuracy, classification_diagnostics, confusion_matrix, macro_f1
 
 __all__ = [
     "RoutingThresholdSelection",
     "accuracy",
     "apply_temperature",
+    "classification_diagnostics",
     "confusion_matrix",
     "expected_calibration_error",
     "fit_temperature",
