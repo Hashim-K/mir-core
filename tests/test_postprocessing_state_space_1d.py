@@ -114,6 +114,63 @@ def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
     assert np.all(emission_frames >= source_frames)
 
 
+def test_heydari_1d_process_frame_matches_causal_batch_decode() -> None:
+    fps = 50
+    activations = np.zeros((500, 2), dtype=np.float32)
+    for index, frame in enumerate(range(200, 500, 25)):
+        activations[frame, 0] = 0.95
+        activations[frame, 1] = 0.9 if index % 4 == 0 else 0.05
+    tagged = _decoder_activations(activations)
+
+    batch = Heydari1DStateSpaceTracker(
+        fps=fps,
+        peak_snap_window_frames=4,
+        peak_snap_mode="past",
+    ).process(tagged)
+    tracker = Heydari1DStateSpaceTracker(
+        fps=fps,
+        peak_snap_window_frames=4,
+        peak_snap_mode="past",
+    )
+    rows = []
+    for frame_index in range(len(tagged.values)):
+        emitted = tracker.process_frame(
+            ExclusiveBeatDownbeatActivations(
+                tagged.values[frame_index : frame_index + 1],
+                definition=tagged.definition,
+                downbeats_available=tagged.downbeats_available,
+            )
+        )
+        if len(emitted):
+            rows.extend(emitted)
+    streamed = np.asarray(rows, dtype=float).reshape(-1, 4)
+
+    np.testing.assert_allclose(streamed, batch)
+
+
+def test_heydari_1d_process_frame_reset_is_repeatable() -> None:
+    tracker = Heydari1DStateSpaceTracker(fps=50, offset=0.0)
+    activation = _decoder_activations(np.asarray([[0.95, 0.0]], dtype=np.float32))
+
+    first = tracker.process_frame(activation)
+    tracker.reset()
+    second = tracker.process_frame(activation)
+
+    np.testing.assert_allclose(second, first)
+
+
+def test_heydari_1d_process_frame_rejects_future_peak_snap() -> None:
+    tracker = Heydari1DStateSpaceTracker(
+        peak_snap_window_frames=2,
+        peak_snap_mode="future",
+    )
+
+    with pytest.raises(ValueError, match="peak_snap_mode='past'"):
+        tracker.process_frame(
+            _decoder_activations(np.asarray([[0.5, 0.1]], dtype=np.float32))
+        )
+
+
 def test_heydari_1d_rejects_untagged_two_channel_arrays() -> None:
     with pytest.raises(ActivationFormatMismatchError, match="untagged"):
         Heydari1DStateSpaceTracker().process(

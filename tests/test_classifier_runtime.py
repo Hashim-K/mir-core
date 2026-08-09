@@ -190,6 +190,72 @@ def test_runtime_distinguishes_native_fallback_from_rejection() -> None:
     assert result.fallback_reason == "native_prediction"
 
 
+def test_runtime_separates_uncertainty_from_confident_other_execution() -> None:
+    runtime = StreamingClassifierRuntime(
+        _classifier(),
+        strategy="hard",
+        ema_alpha=1.0,
+        confidence_threshold=0.6,
+        switch_margin=0.0,
+        min_consecutive_windows=2,
+        execution_labels=(
+            "candombe",
+            "brid",
+            "salsa",
+            "latin_general",
+            "stock",
+        ),
+        classifier_to_route={
+            "candombe": "candombe",
+            "brid": "brid",
+            "salsa": "salsa",
+            "other": "stock",
+        },
+        uncertainty_fallback_label="latin_general",
+        native_fallback_route_label="stock",
+        low_confidence_fallback="hold_then_uncertainty",
+        low_confidence_hold_windows=1,
+    )
+
+    uncertain = runtime.process_window(
+        _logit_window([0.25, 0.25, 0.25, 0.25]),
+        timestamp_seconds=1.0,
+    )
+    stock_pending = runtime.process_window(
+        _logit_window([0.05, 0.05, 0.05, 0.85]),
+        timestamp_seconds=1.5,
+    )
+    stock = runtime.process_window(
+        _logit_window([0.05, 0.05, 0.05, 0.85]),
+        timestamp_seconds=2.0,
+    )
+    held = runtime.process_window(
+        _logit_window([0.25, 0.25, 0.25, 0.25]),
+        timestamp_seconds=2.5,
+    )
+    fallback = runtime.process_window(
+        _logit_window([0.25, 0.25, 0.25, 0.25]),
+        timestamp_seconds=3.0,
+    )
+
+    assert uncertain.routed_label == "latin_general"
+    assert uncertain.execution_labels == (
+        "candombe",
+        "brid",
+        "salsa",
+        "latin_general",
+        "stock",
+    )
+    assert stock_pending.routed_label == "latin_general"
+    assert stock.routed_label == "stock"
+    assert stock.native_fallback_prediction is True
+    assert stock.execution_weights_by_label["stock"] == pytest.approx(1.0)
+    assert held.routed_label == "stock"
+    assert held.fallback_reason == "low_confidence_hold"
+    assert fallback.routed_label == "latin_general"
+    assert fallback.fallback_reason == "low_confidence"
+
+
 @pytest.mark.parametrize(
     ("strategy", "probabilities", "expected_weights", "expected_mode"),
     [

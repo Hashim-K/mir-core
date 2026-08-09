@@ -10,6 +10,9 @@ from mir_core.evaluation.metrics import (
     compute_event_timing_error_stats,
     compute_event_timing_errors,
     compute_ibi_stats,
+    compute_realtime_event_metrics,
+    compute_realtime_event_times,
+    compute_realtime_f1_curve,
 )
 
 
@@ -69,3 +72,77 @@ def test_compute_beat_metrics_empty_case_uses_full_schema() -> None:
     assert empty["fmeasure"] == 0.0
     assert empty["ibi_n"] == 0
     assert empty["ibi_ann_n"] == 23
+
+
+def test_realtime_event_times_wait_for_late_decisions_only() -> None:
+    predicted = np.asarray([1.0, 2.0, 3.0])
+    ready = np.asarray([0.9, 2.08, 2.5])
+
+    effective = compute_realtime_event_times(predicted, ready)
+
+    assert effective == pytest.approx([1.0, 2.08, 3.0])
+
+
+def test_realtime_f1_penalizes_timestamp_correct_but_late_events() -> None:
+    annotated = np.arange(0.5, 12.5, 0.5)
+    predicted = annotated.copy()
+    ready = predicted.copy()
+    ready[8:] += 0.25
+
+    conventional = compute_beat_metrics(predicted, annotated, tolerance=0.07)
+    realtime = compute_realtime_event_metrics(
+        predicted,
+        ready,
+        annotated,
+        tolerance=0.07,
+    )
+
+    assert conventional["fmeasure"] == pytest.approx(1.0)
+    assert realtime["rt_matched"] == 8
+    assert realtime["rt_precision"] == pytest.approx(1.0 / 3.0)
+    assert realtime["rt_recall"] == pytest.approx(1.0 / 3.0)
+    assert realtime["rt_f1"] == pytest.approx(1.0 / 3.0)
+
+
+def test_realtime_f1_curve_uses_agreed_tolerances_and_normalized_auc() -> None:
+    annotated = np.asarray([1.0, 2.0])
+    predicted = annotated.copy()
+    ready = np.asarray([1.04, 2.12])
+
+    curve = compute_realtime_f1_curve(predicted, ready, annotated)
+
+    assert curve["tolerances_seconds"] == pytest.approx(
+        [0.03, 0.05, 0.07, 0.10, 0.15]
+    )
+    assert curve["f1"] == pytest.approx([0.0, 0.5, 0.5, 0.5, 1.0])
+    expected_auc = np.trapz(
+        [0.0, 0.5, 0.5, 0.5, 1.0],
+        [0.03, 0.05, 0.07, 0.10, 0.15],
+    ) / 0.12
+    assert curve["auc"] == pytest.approx(expected_auc)
+
+
+def test_realtime_metrics_reject_misaligned_event_availability() -> None:
+    with pytest.raises(ValueError, match="one aligned value"):
+        compute_realtime_event_metrics(
+            np.asarray([1.0, 2.0]),
+            np.asarray([1.0]),
+            np.asarray([1.0, 2.0]),
+        )
+
+
+def test_realtime_f1_does_not_rematch_long_latency_to_later_periodic_beats() -> None:
+    annotated = np.arange(0.5, 20.5, 0.5)
+    predicted = annotated.copy()
+    ready = predicted + 2.0
+
+    realtime = compute_realtime_event_metrics(
+        predicted,
+        ready,
+        annotated,
+        tolerance=0.07,
+    )
+
+    assert realtime["conventional_matched"] == len(annotated)
+    assert realtime["rt_matched"] == 0
+    assert realtime["rt_f1"] == pytest.approx(0.0)

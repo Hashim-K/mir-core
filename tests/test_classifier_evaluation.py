@@ -7,7 +7,9 @@ import torch
 from mir_core.classifier.evaluation import (
     accuracy,
     apply_temperature,
+    binary_ranking_diagnostics,
     classification_diagnostics,
+    confidence_rejection_diagnostics,
     confusion_matrix,
     expected_calibration_error,
     fit_temperature,
@@ -95,6 +97,76 @@ def test_classification_diagnostics_marks_undefined_ranking_metrics() -> None:
     assert report["per_class"][1]["roc_auc"] is None
     assert report["per_class"][1]["average_precision"] is None
     assert report["averages"]["macro"]["roc_auc"] is None
+
+
+def test_binary_ranking_diagnostics_report_prevalence_and_ties() -> None:
+    report = binary_ranking_diagnostics(
+        [0.9, 0.8, 0.8, 0.1],
+        [1, 0, 1, 0],
+    )
+
+    assert report["num_samples"] == 4
+    assert report["positive_count"] == 2
+    assert report["negative_count"] == 2
+    assert report["positive_prevalence"] == pytest.approx(0.5)
+    assert report["roc_auc"] == pytest.approx(0.875)
+    assert report["average_precision"] == pytest.approx(5 / 6)
+
+
+def test_confidence_rejection_diagnostics_distinguish_known_non_target() -> None:
+    probabilities = np.asarray(
+        [
+            [0.90, 0.05, 0.05],
+            [0.10, 0.80, 0.10],
+            [0.15, 0.10, 0.75],
+            [0.40, 0.35, 0.25],
+        ]
+    )
+    report = confidence_rejection_diagnostics(
+        probabilities,
+        [0, 1, 2, 2],
+        non_target_index=2,
+        coverage_levels=(0.5, 1.0),
+    )
+
+    error = report["maximum_softmax_error_detection"]
+    assert error["positive_count"] == 1
+    assert error["roc_auc"] == pytest.approx(1.0)
+    selective = report["selective_prediction"]
+    assert selective["aurc"] == pytest.approx(0.0625)
+    assert selective["operating_points"][0]["risk"] == pytest.approx(0.0)
+    assert selective["operating_points"][1]["risk"] == pytest.approx(0.25)
+    non_target = report["non_target_detection"]
+    assert non_target["valid_unseen_ood_claim"] is False
+    assert non_target["explicit_non_target_probability"]["roc_auc"] == pytest.approx(
+        1.0
+    )
+    assert non_target["target_bank_rejection"]["roc_auc"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("scores", "targets", "match"),
+    [
+        ([], [], "must not be empty"),
+        ([0.1], [0, 1], "same number"),
+        ([float("nan")], [1], "scores must be finite"),
+        ([0.1], [2], "only contain 0 and 1"),
+    ],
+)
+def test_binary_ranking_diagnostics_reject_invalid_inputs(
+    scores, targets, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        binary_ranking_diagnostics(scores, targets)
+
+
+def test_confidence_rejection_diagnostics_validate_non_target_index() -> None:
+    with pytest.raises(ValueError, match="non_target_index"):
+        confidence_rejection_diagnostics(
+            [[0.8, 0.2]],
+            [0],
+            non_target_index=2,
+        )
 
 
 @pytest.mark.parametrize(

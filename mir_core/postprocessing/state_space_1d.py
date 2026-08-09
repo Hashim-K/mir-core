@@ -237,6 +237,197 @@ class Heydari1DStateSpaceTracker:
         )
         self.om = ObservationModel1D(self.st, observation_lambda)
         self.om2 = ObservationModel1D(self.st2, downbeat_observation_lambda)
+        self._initial_beat_jump_weights = self.st.jump_weights.copy()
+        self._initial_downbeat_jump_weights = self.st2.jump_weights.copy()
+        self.reset()
+
+    def reset(self) -> None:
+        """Reset all jump-reward and event state for a new causal stream."""
+
+        self.st.jump_weights = self._initial_beat_jump_weights.copy()
+        self.st2.jump_weights = self._initial_downbeat_jump_weights.copy()
+        self._beat_distribution = np.ones(self.st.num_states, dtype=float) * 0.8
+        if len(self._beat_distribution) > 5:
+            self._beat_distribution[5] = 1.0
+        self._down_distribution = np.ones(self.st2.num_states, dtype=float) * 0.8
+        self._local_tempo = 0
+        self._meter = 0
+        self._last_boundary_time = 0.0
+        self._input_frame_index = 0
+        self._active_frame_index = 0
+        self._activation_history: list[np.ndarray] = []
+
+    @staticmethod
+    def _validated_exclusive_values(
+        activations: ExclusiveBeatDownbeatActivations[np.ndarray],
+    ) -> np.ndarray:
+        supplied = require_exclusive_beat_downbeat_activations(activations)
+        exclusive = to_exclusive_beat_downbeat_activation_data(
+            supplied,
+            dtype=np.float64,
+        )
+        values = exclusive.values
+        if values.ndim != 2:
+            raise ValueError(
+                "Heydari1DStateSpaceTracker expects a 2-dimensional "
+                "activation array."
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Heydari 1D activations must be finite.")
+        if np.any(values < 0.0) or np.any(values > 1.0):
+            raise ValueError(
+                "Heydari 1D activations must be probabilities in [0, 1]."
+            )
+        if np.any(np.sum(values, axis=1) > 1.0 + 1e-6):
+            raise ValueError(
+                "Exclusive beat-only and downbeat probabilities must sum to "
+                "at most 1."
+            )
+        return values
+
+    def process_frame(
+        self,
+        activation: ExclusiveBeatDownbeatActivations[np.ndarray],
+    ) -> np.ndarray:
+        """Advance one activation frame and return zero or one new event.
+
+        This is the deployment API. It preserves the tracker distributions and
+        jump rewards between calls and therefore has constant work per audio
+        frame. Future/centred peak snapping is deliberately rejected because it
+        cannot be emitted causally; use ``past`` snapping or a zero-frame window.
+        """
+
+        values = self._validated_exclusive_values(activation)
+        if len(values) != 1:
+            raise ValueError("process_frame requires exactly one activation frame")
+        if self.peak_snap_window_frames and self.peak_snap_mode != "past":
+            raise ValueError(
+                "process_frame requires peak_snap_mode='past' when peak snapping "
+                "is enabled"
+            )
+
+        current_activations = values[0].copy()
+        source_frame_index = self._input_frame_index
+        self._input_frame_index += 1
+        self._activation_history.append(current_activations)
+        start_frame = int(self.offset * self.fps)
+        if source_frame_index < start_frame:
+            return np.empty((0, 4), dtype=float)
+
+        self._active_frame_index += 1
+        frame_index = self._active_frame_index
+        frame_period = 1.0 / self.fps
+        activation_value = float(np.max(current_activations))
+        if activation_value < self.ig_threshold:
+            activation_value = 0.03
+
+        if np.max(self.st.jump_weights) > 1:
+            self.st.jump_weights = (
+                0.7 * self.st.jump_weights / np.max(self.st.jump_weights)
+            )
+        beat_weight = self.st.jump_weights.copy()
+        beat_jump_rewards1 = -self._beat_distribution * beat_weight
+        beat_weight[beat_weight < 0.7] = 0
+        jump_back_mass = float(np.sum(self._beat_distribution * beat_weight))
+        self._beat_distribution = np.roll(
+            self._beat_distribution * (1 - beat_weight),
+            1,
+        )
+        self._beat_distribution[0] += jump_back_mass
+
+        if activation_value > self.ig_threshold:
+            obs = _beat_densities(activation_value, self.om, self.st)
+            old_distribution = self._beat_distribution.copy()
+            self._beat_distribution = old_distribution * obs
+            if np.min(self._beat_distribution) < 1e-5:
+                self._beat_distribution = _renormalize(self._beat_distribution)
+            beat_max = int(np.argmax(self._beat_distribution))
+            beat_jump_rewards = self._beat_distribution - old_distribution
+            beat_jump_rewards[: self.st.min_interval - 1] = 0
+            max_negative_reward = float(np.max(-beat_jump_rewards))
+            if max_negative_reward != 0:
+                self.st.jump_weights += -4 * beat_jump_rewards / max_negative_reward
+            self._local_tempo = round(
+                self.fps * 60 / (np.argmax(self.st.jump_weights) + 1)
+            )
+        else:
+            beat_jump_rewards1[: self.st.min_interval - 1] = 0
+            self.st.jump_weights += 2 * beat_jump_rewards1
+            self.st.jump_weights[: self.st.min_interval - 1] = 0
+            beat_max = int(np.argmax(self._beat_distribution))
+
+        boundary_time = frame_index * frame_period + self.offset
+        event_time = boundary_time
+        peak_strength = activation_value
+        if self.peak_snap_window_frames:
+            lo = max(0, source_frame_index - self.peak_snap_window_frames)
+            history = np.asarray(self._activation_history[lo : source_frame_index + 1])
+            local_strength = np.max(history, axis=1)
+            peak_offset = int(np.argmax(local_strength))
+            peak_strength = float(local_strength[peak_offset])
+            event_time = (lo + peak_offset) * frame_period
+
+        if self.min_separation_mode == "local_tempo":
+            separation_interval = max(
+                self.st.min_interval,
+                int(np.argmax(self.st.jump_weights) + 1),
+            )
+        else:
+            separation_interval = self.st.min_interval
+        min_separation = 0.45 * frame_period * separation_interval
+        near_beat_boundary = beat_max < int(0.07 / frame_period) + 1
+        enough_peak = (
+            self.peak_snap_threshold is None
+            or peak_strength >= self.peak_snap_threshold
+        )
+        if not (
+            near_beat_boundary
+            and boundary_time - self._last_boundary_time > min_separation
+            and enough_peak
+        ):
+            return np.empty((0, 4), dtype=float)
+
+        if np.max(self.st2.jump_weights) > 1:
+            self.st2.jump_weights = (
+                0.2 * self.st2.jump_weights / np.max(self.st2.jump_weights)
+            )
+        down_weight = self.st2.jump_weights.copy()
+        down_jump_rewards1 = -self._down_distribution * down_weight
+        down_weight[down_weight < 0.2] = 0
+        down_jump_back_mass = float(np.sum(self._down_distribution * down_weight))
+        self._down_distribution = np.roll(
+            self._down_distribution * (1 - down_weight),
+            1,
+        )
+        self._down_distribution[0] += down_jump_back_mass
+
+        if current_activations[1] > 0.00002:
+            obs2 = _downbeat_densities(current_activations, self.om2, self.st2)
+            old_down_distribution = self._down_distribution.copy()
+            self._down_distribution = old_down_distribution * obs2
+            if np.min(self._down_distribution) < 1e-5:
+                self._down_distribution = _renormalize(self._down_distribution)
+            down_max = int(np.argmax(self._down_distribution))
+            down_jump_rewards = self._down_distribution - old_down_distribution
+            down_jump_rewards[: self.st2.max_interval - 1] = 0
+            max_negative_reward = float(np.max(-down_jump_rewards))
+            if max_negative_reward != 0:
+                self.st2.jump_weights += (
+                    -0.3 * down_jump_rewards / max_negative_reward
+                )
+            self._meter = int(np.argmax(self.st2.jump_weights) + 1)
+        else:
+            down_jump_rewards1[: self.st2.min_interval - 1] = 0
+            self.st2.jump_weights += 2 * down_jump_rewards1
+            self.st2.jump_weights[: self.st2.min_interval - 1] = 0
+            down_max = int(np.argmax(self._down_distribution))
+
+        label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
+        self._last_boundary_time = boundary_time
+        return np.asarray(
+            [[event_time, label, float(self._local_tempo), float(self._meter)]],
+            dtype=float,
+        )
 
     def __call__(
         self,
@@ -271,28 +462,8 @@ class Heydari1DStateSpaceTracker:
         activations: ExclusiveBeatDownbeatActivations[np.ndarray],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Decode events with source-activation and callback-emission frames."""
-        supplied = require_exclusive_beat_downbeat_activations(activations)
-        exclusive = to_exclusive_beat_downbeat_activation_data(
-            supplied,
-            dtype=np.float64,
-        )
-        values = exclusive.values
-        if values.ndim != 2:
-            raise ValueError(
-                "Heydari1DStateSpaceTracker expects a 2-dimensional "
-                "activation array."
-            )
-        if not np.all(np.isfinite(values)):
-            raise ValueError("Heydari 1D activations must be finite.")
-        if np.any(values < 0.0) or np.any(values > 1.0):
-            raise ValueError(
-                "Heydari 1D activations must be probabilities in [0, 1]."
-            )
-        if np.any(np.sum(values, axis=1) > 1.0 + 1e-6):
-            raise ValueError(
-                "Exclusive beat-only and downbeat probabilities must sum to "
-                "at most 1."
-            )
+        values = self._validated_exclusive_values(activations)
+        self.reset()
         if values.size == 0:
             return (
                 np.empty((0, 4), dtype=float),

@@ -11,6 +11,9 @@ Functions:
     compute_downbeat_metrics — downbeat metrics for a single track.
     compute_event_timing_errors — signed errors for one-to-one matched events.
     compute_event_timing_error_stats — millisecond timing-error diagnostics.
+    compute_realtime_event_times — event times after software availability delay.
+    compute_realtime_event_metrics — precision/recall/RT-F1 at one tolerance.
+    compute_realtime_f1_curve — RT-F1 across the thesis tolerance curve.
     evaluate_beats           — aggregate metrics across multiple tracks.
     evaluate_downbeats       — aggregate downbeat metrics.
     evaluate_tempo           — tempo evaluation with Acc1/Acc2.
@@ -20,11 +23,14 @@ Functions:
     ibi_distribution_text    — human-readable IBI summary.
 """
 
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Sequence, Tuple
 from collections import defaultdict
 
 import numpy as np
 import mir_eval
+
+
+DEFAULT_REALTIME_TOLERANCES_SECONDS = (0.03, 0.05, 0.07, 0.10, 0.15)
 
 
 # =============================================================================
@@ -175,6 +181,147 @@ def ibi_distribution_text(
 # =============================================================================
 # Matched-Event Timing Error
 # =============================================================================
+
+
+def compute_realtime_event_times(
+    events_pred: np.ndarray,
+    output_ready_times: np.ndarray,
+) -> np.ndarray:
+    """Return the physical event times available before actuation.
+
+    A causal system can schedule an event that it predicts before the intended
+    musical timestamp, but it cannot emit an event before the software has made
+    the decision available.  The effective pre-actuator event time is therefore
+    ``max(predicted musical time, software output-ready time)`` for each event.
+
+    This deliberately excludes actuator and transport delay.  Those are
+    measured separately by the end-to-end experiment.
+    """
+
+    predicted = np.asarray(events_pred, dtype=float).reshape(-1)
+    ready = np.asarray(output_ready_times, dtype=float).reshape(-1)
+    if predicted.shape != ready.shape:
+        raise ValueError(
+            "events_pred and output_ready_times must contain one aligned value "
+            "per emitted event"
+        )
+    if not np.all(np.isfinite(predicted)):
+        raise ValueError("events_pred must contain only finite timestamps")
+    if not np.all(np.isfinite(ready)):
+        raise ValueError("output_ready_times must contain only finite timestamps")
+    return np.maximum(predicted, ready)
+
+
+def compute_realtime_event_metrics(
+    events_pred: np.ndarray,
+    output_ready_times: np.ndarray,
+    events_ann: np.ndarray,
+    tolerance: float = 0.07,
+) -> Dict[str, float]:
+    """Compute causal precision, recall, and RT-F1 before actuation.
+
+    First, conventional maximum-cardinality one-to-one matching establishes
+    which annotated musical event each predicted timestamp represents.  A
+    matched prediction is an RT true positive only when its effective output
+    time also falls within ``tolerance`` of that *same* annotation.  Preserving
+    event identity prevents a prediction delayed by one or more beat periods
+    from being incorrectly reassigned to a later beat.
+    """
+
+    tolerance = float(tolerance)
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be a positive finite number of seconds")
+    predicted = np.asarray(events_pred, dtype=float).reshape(-1)
+    effective = compute_realtime_event_times(events_pred, output_ready_times)
+    prediction_order = np.argsort(predicted, kind="stable")
+    predicted = predicted[prediction_order]
+    effective = effective[prediction_order]
+    annotated = np.sort(np.asarray(events_ann, dtype=float).reshape(-1))
+    if not np.all(np.isfinite(annotated)):
+        raise ValueError("events_ann must contain only finite timestamps")
+
+    conventional_matches = (
+        mir_eval.util.match_events(annotated, predicted, tolerance)
+        if len(annotated) and len(effective)
+        else []
+    )
+    matched = int(
+        sum(
+            abs(effective[pred_index] - annotated[ann_index]) <= tolerance
+            for ann_index, pred_index in conventional_matches
+        )
+    )
+    precision = float(matched / len(effective)) if len(effective) else 0.0
+    recall = float(matched / len(annotated)) if len(annotated) else 0.0
+    denominator = precision + recall
+    f1 = 0.0 if denominator == 0.0 else 2.0 * precision * recall / denominator
+    return {
+        "rt_precision": precision,
+        "rt_recall": recall,
+        "rt_f1": float(f1),
+        "rt_matched": float(matched),
+        "conventional_matched": float(len(conventional_matches)),
+        "rt_num_pred": float(len(effective)),
+        "rt_num_ann": float(len(annotated)),
+        "rt_tolerance_seconds": tolerance,
+    }
+
+
+def compute_realtime_f1_curve(
+    events_pred: np.ndarray,
+    output_ready_times: np.ndarray,
+    events_ann: np.ndarray,
+    tolerances: Sequence[float] = DEFAULT_REALTIME_TOLERANCES_SECONDS,
+) -> Dict[str, Any]:
+    """Compute the thesis RT-F1 tolerance curve and normalized AUC.
+
+    The returned AUC is normalized by the tolerance span, so it remains on the
+    same 0–1 scale as F1.  The default curve evaluates 30, 50, 70, 100, and
+    150 ms.  A one-point curve has that point's F1 as its AUC.
+    """
+
+    tolerance_values = np.asarray(tuple(tolerances), dtype=float).reshape(-1)
+    if not len(tolerance_values):
+        raise ValueError("tolerances must contain at least one value")
+    if not np.all(np.isfinite(tolerance_values)) or np.any(
+        tolerance_values <= 0.0
+    ):
+        raise ValueError("tolerances must contain positive finite seconds")
+    if len(tolerance_values) > 1 and np.any(np.diff(tolerance_values) <= 0.0):
+        raise ValueError("tolerances must be strictly increasing")
+
+    rows = [
+        compute_realtime_event_metrics(
+            events_pred,
+            output_ready_times,
+            events_ann,
+            tolerance=float(tolerance),
+        )
+        for tolerance in tolerance_values
+    ]
+    precision = np.asarray([row["rt_precision"] for row in rows], dtype=float)
+    recall = np.asarray([row["rt_recall"] for row in rows], dtype=float)
+    f1 = np.asarray([row["rt_f1"] for row in rows], dtype=float)
+    matched = np.asarray([row["rt_matched"] for row in rows], dtype=float)
+    if len(tolerance_values) == 1:
+        auc = float(f1[0])
+    else:
+        auc = float(
+            np.trapz(f1, tolerance_values)
+            / (tolerance_values[-1] - tolerance_values[0])
+        )
+    return {
+        "tolerances_seconds": tolerance_values,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "matched": matched,
+        "auc": auc,
+        "effective_event_times_seconds": compute_realtime_event_times(
+            events_pred,
+            output_ready_times,
+        ),
+    }
 
 
 def compute_event_timing_errors(

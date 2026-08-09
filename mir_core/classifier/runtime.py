@@ -39,6 +39,8 @@ class StreamingClassifierState:
     routed_label: str
     pending_route_label: str | None
     pending_route_count: int
+    low_confidence_count: int
+    route_age_windows: int
     smoothed_probabilities: tuple[float, ...]
 
 
@@ -79,6 +81,7 @@ class StreamingClassifierResult:
     sequence_index: int
     timestamp_seconds: float
     labels: tuple[str, ...]
+    execution_labels: tuple[str, ...]
     logits: tuple[float, ...]
     probabilities: tuple[float, ...]
     smoothed_probabilities: tuple[float, ...]
@@ -94,6 +97,10 @@ class StreamingClassifierResult:
     pending_route_label: str | None
     pending_route_count: int
     min_consecutive_windows: int
+    low_confidence_count: int
+    low_confidence_hold_windows: int
+    route_age_windows: int
+    min_dwell_windows: int
     switch_margin: float
     switched: bool
     hysteresis_held: bool
@@ -127,13 +134,13 @@ class StreamingClassifierResult:
     def policy_weights_by_label(self) -> dict[str, float]:
         """Return raw GenreRouter policy weights keyed by route label."""
 
-        return dict(zip(self.labels, self.policy_weights, strict=True))
+        return dict(zip(self.execution_labels, self.policy_weights, strict=True))
 
     @property
     def execution_weights_by_label(self) -> dict[str, float]:
         """Return final scheduler/execution weights keyed by route label."""
 
-        return dict(zip(self.labels, self.execution_weights, strict=True))
+        return dict(zip(self.execution_labels, self.execution_weights, strict=True))
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation of this window result."""
@@ -142,6 +149,7 @@ class StreamingClassifierResult:
             "sequence_index": self.sequence_index,
             "timestamp_seconds": self.timestamp_seconds,
             "labels": list(self.labels),
+            "execution_labels": list(self.execution_labels),
             "logits": list(self.logits),
             "probabilities": self.probabilities_by_label,
             "smoothed_probabilities": self.smoothed_probabilities_by_label,
@@ -158,6 +166,10 @@ class StreamingClassifierResult:
                 "pending_label": self.pending_route_label,
                 "pending_count": self.pending_route_count,
                 "min_consecutive_windows": self.min_consecutive_windows,
+                "low_confidence_count": self.low_confidence_count,
+                "low_confidence_hold_windows": self.low_confidence_hold_windows,
+                "route_age_windows": self.route_age_windows,
+                "min_dwell_windows": self.min_dwell_windows,
                 "switch_margin": self.switch_margin,
                 "switched": self.switched,
                 "hysteresis_held": self.hysteresis_held,
@@ -214,6 +226,13 @@ class StreamingClassifierRuntime:
         switch_margin: float | None = None,
         min_consecutive_windows: int | None = None,
         hysteresis_margin: float | None = None,
+        execution_labels: tuple[str, ...] | list[str] | None = None,
+        classifier_to_route: Mapping[str, str] | None = None,
+        uncertainty_fallback_label: str | None = None,
+        native_fallback_route_label: str | None = None,
+        low_confidence_fallback: str | None = None,
+        low_confidence_hold_windows: int | None = None,
+        min_dwell_windows: int | None = None,
     ) -> None:
         if not isinstance(classifier, GenreClassifier):
             raise TypeError("classifier must be a GenreClassifier.")
@@ -225,14 +244,21 @@ class StreamingClassifierRuntime:
         if not isinstance(raw_hysteresis_config, Mapping):
             raise ValueError("router_config.hysteresis must be a mapping.")
         hysteresis_config = dict(raw_hysteresis_config)
-        low_confidence_fallback = hysteresis_config.get(
-            "low_confidence_fallback",
-            router_config.get("low_confidence_fallback", "immediate"),
+        resolved_low_confidence_fallback = str(
+            low_confidence_fallback
+            if low_confidence_fallback is not None
+            else hysteresis_config.get(
+                "low_confidence_fallback",
+                router_config.get("low_confidence_fallback", "immediate"),
+            )
         )
-        if low_confidence_fallback != "immediate":
+        if resolved_low_confidence_fallback not in {
+            "immediate",
+            "hold_then_uncertainty",
+        }:
             raise ValueError(
-                "low_confidence_fallback must be 'immediate' for the "
-                "streaming runtime."
+                "low_confidence_fallback must be 'immediate' or "
+                "'hold_then_uncertainty'."
             )
 
         resolved_temperature = (
@@ -332,8 +358,101 @@ class StreamingClassifierRuntime:
             resolved_minimum,
             name="min_consecutive_windows",
         )
+        configured_hold = hysteresis_config.get("low_confidence_hold_windows", 0)
+        resolved_hold = (
+            configured_hold
+            if low_confidence_hold_windows is None
+            else low_confidence_hold_windows
+        )
+        resolved_hold_number = self._non_negative_integer(
+            resolved_hold,
+            name="low_confidence_hold_windows",
+        )
+        if resolved_low_confidence_fallback == "immediate" and resolved_hold_number:
+            raise ValueError(
+                "low_confidence_hold_windows must be zero when "
+                "low_confidence_fallback is 'immediate'."
+            )
+        configured_dwell = hysteresis_config.get(
+            "min_dwell_windows",
+            router_config.get("min_dwell_windows", 0),
+        )
+        resolved_dwell = (
+            configured_dwell if min_dwell_windows is None else min_dwell_windows
+        )
+        resolved_dwell_number = self._non_negative_integer(
+            resolved_dwell,
+            name="min_dwell_windows",
+        )
         if resolved_confidence_number + resolved_switch_margin_number > 1.0:
             raise ValueError("confidence_threshold + switch_margin must not exceed 1.")
+
+        raw_execution_config = router_config.get("execution_routes", {})
+        if raw_execution_config is None:
+            raw_execution_config = {}
+        if not isinstance(raw_execution_config, Mapping):
+            raise ValueError("router_config.execution_routes must be a mapping.")
+        execution_config = dict(raw_execution_config)
+        raw_route_map = (
+            classifier_to_route
+            if classifier_to_route is not None
+            else execution_config.get("classifier_to_route")
+        )
+        if raw_route_map is None:
+            route_map = {label: label for label in classifier.genre_labels}
+        elif not isinstance(raw_route_map, Mapping):
+            raise ValueError("classifier_to_route must be a mapping.")
+        else:
+            route_map = {str(key): str(value) for key, value in raw_route_map.items()}
+        if set(route_map) != set(classifier.genre_labels):
+            raise ValueError(
+                "classifier_to_route must contain every classifier label exactly once."
+            )
+        if any(not label for label in route_map.values()):
+            raise ValueError("classifier_to_route values must be non-empty labels.")
+        resolved_uncertainty = str(
+            uncertainty_fallback_label
+            if uncertainty_fallback_label is not None
+            else execution_config.get("uncertainty_fallback_label", resolved_fallback)
+        )
+        resolved_native_fallback_route = str(
+            native_fallback_route_label
+            if native_fallback_route_label is not None
+            else execution_config.get(
+                "native_fallback_route_label",
+                route_map[resolved_fallback],
+            )
+        )
+        if route_map[resolved_fallback] != resolved_native_fallback_route:
+            raise ValueError(
+                "native_fallback_route_label must match the fallback classifier "
+                "label's classifier_to_route mapping."
+            )
+        raw_execution_labels = (
+            execution_labels
+            if execution_labels is not None
+            else execution_config.get("labels")
+        )
+        if raw_execution_labels is None:
+            inferred = list(dict.fromkeys(route_map[label] for label in classifier.genre_labels))
+            if resolved_uncertainty not in inferred:
+                inferred.append(resolved_uncertainty)
+            resolved_execution_labels = tuple(inferred)
+        else:
+            if isinstance(raw_execution_labels, (str, bytes)):
+                raise ValueError("execution_labels must be a sequence of labels.")
+            resolved_execution_labels = tuple(str(label) for label in raw_execution_labels)
+        if (
+            not resolved_execution_labels
+            or any(not label for label in resolved_execution_labels)
+            or len(set(resolved_execution_labels)) != len(resolved_execution_labels)
+        ):
+            raise ValueError("execution_labels must be non-empty and unique.")
+        required_execution_labels = set(route_map.values()) | {resolved_uncertainty}
+        if not required_execution_labels.issubset(resolved_execution_labels):
+            raise ValueError(
+                "execution_labels must include every mapped and uncertainty route."
+            )
 
         self.classifier = classifier
         self.classifier.eval()
@@ -342,6 +461,13 @@ class StreamingClassifierRuntime:
         self.switch_margin = resolved_switch_margin_number
         self.hysteresis_margin = resolved_switch_margin_number
         self.min_consecutive_windows = resolved_minimum_number
+        self.low_confidence_hold_windows = resolved_hold_number
+        self.min_dwell_windows = resolved_dwell_number
+        self.low_confidence_fallback = resolved_low_confidence_fallback
+        self.execution_labels = resolved_execution_labels
+        self.classifier_to_route = route_map
+        self.uncertainty_fallback_label = resolved_uncertainty
+        self.native_fallback_route_label = resolved_native_fallback_route
         self.router = GenreRouter(
             genre_labels=list(classifier.genre_labels),
             strategy=resolved_strategy,
@@ -358,11 +484,24 @@ class StreamingClassifierRuntime:
         self._label_to_index = {
             label: index for index, label in enumerate(classifier.genre_labels)
         }
+        self._execution_label_to_index = {
+            label: index for index, label in enumerate(self.execution_labels)
+        }
+        self._route_to_classifier_indices: dict[str, tuple[int, ...]] = {
+            route: tuple(
+                self._label_to_index[label]
+                for label in classifier.genre_labels
+                if self.classifier_to_route[label] == route
+            )
+            for route in self.execution_labels
+        }
         self._windows_processed = 0
         self._last_timestamp_seconds: float | None = None
-        self._routed_label = self.router.fallback_label
+        self._routed_label = self.uncertainty_fallback_label
         self._pending_route_label: str | None = None
         self._pending_route_count = 0
+        self._low_confidence_count = 0
+        self._route_age_windows = 0
 
     @staticmethod
     def _positive_finite(value: Any, *, name: str) -> float:
@@ -401,6 +540,18 @@ class StreamingClassifierRuntime:
         return number
 
     @staticmethod
+    def _non_negative_integer(value: Any, *, name: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be a non-negative integer.")
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{name} must be a non-negative integer.") from exc
+        if number < 0 or number != value:
+            raise ValueError(f"{name} must be a non-negative integer.")
+        return number
+
+    @staticmethod
     def _validate_feature_layout(layout: str) -> None:
         if layout not in _FEATURE_LAYOUTS:
             raise ValueError(
@@ -418,6 +569,8 @@ class StreamingClassifierRuntime:
             routed_label=self._routed_label,
             pending_route_label=self._pending_route_label,
             pending_route_count=self._pending_route_count,
+            low_confidence_count=self._low_confidence_count,
+            route_age_windows=self._route_age_windows,
             smoothed_probabilities=tuple(
                 float(value) for value in self.router.smoothed_probs
             ),
@@ -429,9 +582,11 @@ class StreamingClassifierRuntime:
         self.router.reset()
         self._windows_processed = 0
         self._last_timestamp_seconds = None
-        self._routed_label = self.router.fallback_label
+        self._routed_label = self.uncertainty_fallback_label
         self._pending_route_label = None
         self._pending_route_count = 0
+        self._low_confidence_count = 0
+        self._route_age_windows = 0
 
     def _validated_timestamp(self, timestamp_seconds: Any) -> float:
         if isinstance(timestamp_seconds, bool):
@@ -553,23 +708,30 @@ class StreamingClassifierRuntime:
         smoothed_probabilities: np.ndarray,
         *,
         confidence_rejected: bool,
-        native_fallback_prediction: bool,
     ) -> tuple[str, bool]:
         current = self._routed_label
-        if confidence_rejected or native_fallback_prediction:
+        if confidence_rejected:
+            self._low_confidence_count += 1
             self._clear_pending_route()
-            return self.router.fallback_label, False
+            if self._low_confidence_count <= self.low_confidence_hold_windows:
+                return current, True
+            return self.uncertainty_fallback_label, False
+        self._low_confidence_count = 0
         if candidate_label == current:
             self._clear_pending_route()
             return current, False
 
+        candidate_indices = self._route_to_classifier_indices[candidate_label]
         candidate_probability = float(
-            smoothed_probabilities[self._label_to_index[candidate_label]]
+            sum(smoothed_probabilities[index] for index in candidate_indices)
         )
+        current_indices = self._route_to_classifier_indices[current]
         reference_probability = (
             self.router.confidence_threshold
-            if current == self.router.fallback_label
-            else float(smoothed_probabilities[self._label_to_index[current]])
+            if current == self.uncertainty_fallback_label
+            else float(
+                sum(smoothed_probabilities[index] for index in current_indices)
+            )
         )
         if candidate_probability - reference_probability < self.switch_margin:
             self._clear_pending_route()
@@ -580,7 +742,10 @@ class StreamingClassifierRuntime:
         else:
             self._pending_route_label = candidate_label
             self._pending_route_count = 1
-        if self._pending_route_count < self.min_consecutive_windows:
+        if (
+            self._pending_route_count < self.min_consecutive_windows
+            or self._route_age_windows < self.min_dwell_windows
+        ):
             return current, True
 
         self._clear_pending_route()
@@ -612,10 +777,29 @@ class StreamingClassifierRuntime:
         if self.router.strategy == "hard" or (
             self.router.strategy == "hybrid" and route_mode == "hard"
         ):
-            weights = np.zeros(len(self.classifier.genre_labels), dtype=np.float64)
-            weights[self._label_to_index[routed_label]] = 1.0
+            weights = np.zeros(len(self.execution_labels), dtype=np.float64)
+            weights[self._execution_label_to_index[routed_label]] = 1.0
             return weights
         return np.array(policy_weights, dtype=np.float64, copy=True)
+
+    def _map_policy_weights(
+        self,
+        classifier_weights: np.ndarray,
+        *,
+        confidence_rejected: bool,
+    ) -> np.ndarray:
+        weights = np.zeros(len(self.execution_labels), dtype=np.float64)
+        if confidence_rejected:
+            weights[self._execution_label_to_index[self.uncertainty_fallback_label]] = 1.0
+            return weights
+        for classifier_label, value in zip(
+            self.classifier.genre_labels,
+            classifier_weights,
+            strict=True,
+        ):
+            route_label = self.classifier_to_route[classifier_label]
+            weights[self._execution_label_to_index[route_label]] += float(value)
+        return weights
 
     def process_window(
         self,
@@ -675,26 +859,28 @@ class StreamingClassifierRuntime:
         probabilities = probabilities_tensor[0].cpu().numpy().astype(np.float64)
 
         smoothed = self.router.update_probs(probabilities)
-        policy_weights = np.asarray(
+        classifier_policy_weights = np.asarray(
             self.router.route(self._route_basis),
             dtype=np.float64,
         )
         predicted_index = int(np.argmax(probabilities))
         smoothed_index = int(np.argmax(smoothed))
-        dominant_route_index = int(np.argmax(policy_weights))
         predicted_label = self.classifier.genre_labels[predicted_index]
         smoothed_label = self.classifier.genre_labels[smoothed_index]
-        dominant_route_label = self.classifier.genre_labels[dominant_route_index]
+        dominant_route_label = self.classifier_to_route[smoothed_label]
         confidence = float(probabilities[predicted_index])
         smoothed_confidence = float(smoothed[smoothed_index])
         confidence_rejected = smoothed_confidence < self.router.confidence_threshold
         previous_routed_label = self._routed_label
         native_fallback = smoothed_label == self.router.fallback_label
+        policy_weights = self._map_policy_weights(
+            classifier_policy_weights,
+            confidence_rejected=confidence_rejected,
+        )
         routed_label, hysteresis_held = self._confirm_route(
             dominant_route_label,
             smoothed,
             confidence_rejected=confidence_rejected,
-            native_fallback_prediction=native_fallback,
         )
         switched = routed_label != previous_routed_label
         route_mode = self._route_mode(
@@ -706,17 +892,18 @@ class StreamingClassifierRuntime:
             routed_label=routed_label,
             route_mode=route_mode,
         )
-        if routed_label != self.router.fallback_label:
-            fallback_reason = None
+        if confidence_rejected and hysteresis_held:
+            fallback_reason = "low_confidence_hold"
         elif confidence_rejected:
             fallback_reason = "low_confidence"
-        elif native_fallback:
+        elif native_fallback and routed_label == self.native_fallback_route_label:
             fallback_reason = "native_prediction"
         elif hysteresis_held:
             fallback_reason = "confirmation_hold"
         else:
-            fallback_reason = "route_policy"
+            fallback_reason = None
         self._routed_label = routed_label
+        self._route_age_windows = 1 if switched else self._route_age_windows + 1
         self._last_timestamp_seconds = timestamp
         self._windows_processed += 1
         routing_ms = self._elapsed_ms(routing_started)
@@ -732,6 +919,7 @@ class StreamingClassifierRuntime:
             sequence_index=self._windows_processed - 1,
             timestamp_seconds=timestamp,
             labels=tuple(self.classifier.genre_labels),
+            execution_labels=self.execution_labels,
             logits=tuple(float(value) for value in logits),
             probabilities=tuple(float(value) for value in probabilities),
             smoothed_probabilities=tuple(float(value) for value in smoothed),
@@ -747,6 +935,10 @@ class StreamingClassifierRuntime:
             pending_route_label=self._pending_route_label,
             pending_route_count=self._pending_route_count,
             min_consecutive_windows=self.min_consecutive_windows,
+            low_confidence_count=self._low_confidence_count,
+            low_confidence_hold_windows=self.low_confidence_hold_windows,
+            route_age_windows=self._route_age_windows,
+            min_dwell_windows=self.min_dwell_windows,
             switch_margin=self.switch_margin,
             switched=switched,
             hysteresis_held=hysteresis_held,

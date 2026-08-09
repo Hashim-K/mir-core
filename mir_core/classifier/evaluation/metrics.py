@@ -284,6 +284,199 @@ def _binary_ranking_summary(
     }
 
 
+def binary_ranking_diagnostics(
+    scores: Any,
+    positive_targets: Any,
+) -> dict[str, int | float | None]:
+    """Return JSON-safe binary ranking metrics and class prevalence.
+
+    Higher scores must indicate stronger evidence for the positive class.
+    ``positive_targets`` accepts booleans or numeric 0/1 values. Ranking
+    metrics that cannot be defined because one side of the binary problem is
+    absent are represented by ``None``.
+    """
+
+    score_array = _as_numpy(scores, name="scores")
+    target_array = _as_numpy(positive_targets, name="positive_targets")
+    if score_array.ndim == 0:
+        score_array = score_array.reshape(1)
+    if target_array.ndim == 0:
+        target_array = target_array.reshape(1)
+    if score_array.ndim != 1 or target_array.ndim != 1:
+        raise ValueError("scores and positive_targets must be one-dimensional.")
+    if len(score_array) == 0:
+        raise ValueError("scores and positive_targets must not be empty.")
+    if len(score_array) != len(target_array):
+        raise ValueError(
+            "scores and positive_targets must contain the same number of samples "
+            f"({len(score_array)} != {len(target_array)})."
+        )
+    try:
+        numeric_scores = np.asarray(score_array, dtype=np.float64)
+        numeric_targets = np.asarray(target_array, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scores and positive_targets must be numeric.") from exc
+    if not np.isfinite(numeric_scores).all():
+        raise ValueError("scores must be finite.")
+    if not np.isfinite(numeric_targets).all() or not np.logical_or(
+        numeric_targets == 0.0,
+        numeric_targets == 1.0,
+    ).all():
+        raise ValueError("positive_targets may only contain 0 and 1.")
+    positives = numeric_targets.astype(bool)
+    positive_count = int(positives.sum())
+    num_samples = len(positives)
+    return {
+        "num_samples": num_samples,
+        "positive_count": positive_count,
+        "negative_count": num_samples - positive_count,
+        "positive_prevalence": positive_count / num_samples,
+        **_binary_ranking_summary(numeric_scores, positives),
+    }
+
+
+def _selective_prediction_diagnostics(
+    confidence: np.ndarray,
+    correct: np.ndarray,
+    *,
+    coverage_levels: Sequence[float],
+) -> dict[str, Any]:
+    """Summarize confidence-ranked selective-classification risk."""
+
+    levels: list[float] = []
+    for value in coverage_levels:
+        try:
+            level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("coverage_levels must contain finite values in (0, 1].") from exc
+        if not math.isfinite(level) or not 0.0 < level <= 1.0:
+            raise ValueError("coverage_levels must contain finite values in (0, 1].")
+        if level not in levels:
+            levels.append(level)
+    if not levels:
+        raise ValueError("coverage_levels must not be empty.")
+
+    # Stable ordering makes ties deterministic and retains original sample
+    # order, which is useful when reproducing reports byte-for-byte.
+    order = np.argsort(-confidence, kind="stable")
+    ordered_errors = np.logical_not(correct[order]).astype(np.int64)
+    cumulative_errors = np.cumsum(ordered_errors)
+    retained = np.arange(1, len(confidence) + 1, dtype=np.float64)
+    risk = cumulative_errors.astype(np.float64) / retained
+    operating_points: list[dict[str, int | float]] = []
+    for requested in levels:
+        count = min(len(confidence), max(1, int(math.ceil(requested * len(confidence)))))
+        operating_points.append(
+            {
+                "requested_coverage": requested,
+                "retained_count": count,
+                "realized_coverage": count / len(confidence),
+                "risk": float(risk[count - 1]),
+                "accuracy": float(1.0 - risk[count - 1]),
+                "minimum_retained_confidence": float(confidence[order[count - 1]]),
+            }
+        )
+    return {
+        "ranking_score": "maximum_softmax_probability",
+        "risk_definition": "error_rate_among_retained_predictions",
+        "aurc_definition": "mean_discrete_risk_over_all_retained_counts",
+        "aurc": float(risk.mean()),
+        "full_coverage_risk": float(risk[-1]),
+        "operating_points": operating_points,
+    }
+
+
+def confidence_rejection_diagnostics(
+    probabilities: Any,
+    targets: Any,
+    *,
+    non_target_index: int | None = None,
+    coverage_levels: Sequence[float] = (0.5, 0.8, 0.9, 0.95, 1.0),
+) -> dict[str, Any]:
+    """Evaluate confidence-based error rejection and known non-target detection.
+
+    The maximum-softmax error report follows the standard confidence baseline:
+    ``1 - max(p)`` is used to rank incorrect predictions. When
+    ``non_target_index`` is supplied, two additional one-vs-rest reports measure
+    detection of that *known semantic class*. These are open-set proxies, not
+    evidence of performance on an unseen out-of-distribution corpus.
+    """
+
+    matrix = _as_numpy(probabilities, name="probabilities")
+    try:
+        matrix = np.asarray(matrix, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("probabilities must be a numeric matrix.") from exc
+    if matrix.ndim != 2 or matrix.shape[0] == 0 or matrix.shape[1] < 2:
+        raise ValueError("probabilities must have shape (N, C) with N > 0 and C >= 2.")
+    if not np.isfinite(matrix).all() or (matrix < 0).any():
+        raise ValueError("probabilities must be finite and non-negative.")
+    row_sums = matrix.sum(axis=1)
+    if not np.allclose(row_sums, 1.0, rtol=1e-5, atol=1e-8):
+        raise ValueError("probability rows must sum to 1.")
+    matrix = matrix / row_sums[:, np.newaxis]
+    expected = _class_indices(targets, name="targets", scores_allowed=False)
+    if len(expected) != len(matrix):
+        raise ValueError(
+            "probabilities and targets must contain the same number of samples "
+            f"({len(matrix)} != {len(expected)})."
+        )
+    if expected.size and int(expected.max()) >= matrix.shape[1]:
+        raise ValueError(
+            f"targets class indices must be in [0, {matrix.shape[1] - 1}]."
+        )
+
+    predicted = np.argmax(matrix, axis=1).astype(np.int64)
+    confidence = np.max(matrix, axis=1)
+    correct = predicted == expected
+    result: dict[str, Any] = {
+        "num_samples": len(matrix),
+        "maximum_softmax_error_detection": {
+            "positive_event": "incorrect_prediction",
+            "score": "one_minus_maximum_softmax_probability",
+            **binary_ranking_diagnostics(1.0 - confidence, ~correct),
+        },
+        "selective_prediction": _selective_prediction_diagnostics(
+            confidence,
+            correct,
+            coverage_levels=coverage_levels,
+        ),
+        "non_target_detection": None,
+    }
+    if non_target_index is None:
+        return result
+    if (
+        isinstance(non_target_index, bool)
+        or int(non_target_index) != non_target_index
+        or not 0 <= int(non_target_index) < matrix.shape[1]
+    ):
+        raise ValueError(
+            f"non_target_index must be an integer in [0, {matrix.shape[1] - 1}]."
+        )
+    index = int(non_target_index)
+    positives = expected == index
+    target_class_columns = np.arange(matrix.shape[1]) != index
+    result["non_target_detection"] = {
+        "class_index": index,
+        "interpretation": "known_non_target_class_detection_not_unseen_ood",
+        "valid_unseen_ood_claim": False,
+        "explicit_non_target_probability": {
+            "positive_event": "target_is_known_non_target_class",
+            "score": "non_target_class_probability",
+            **binary_ranking_diagnostics(matrix[:, index], positives),
+        },
+        "target_bank_rejection": {
+            "positive_event": "target_is_known_non_target_class",
+            "score": "one_minus_maximum_target_class_probability",
+            **binary_ranking_diagnostics(
+                1.0 - np.max(matrix[:, target_class_columns], axis=1),
+                positives,
+            ),
+        },
+    }
+    return result
+
+
 def _mean_defined(
     values: Sequence[float | None],
     *,

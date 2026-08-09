@@ -178,3 +178,63 @@ def test_downbeat_tracker_rejects_untagged_two_channel_arrays(
 
     with pytest.raises(ActivationFormatMismatchError, match="untagged"):
         tracker(np.asarray([[0.7, 0.2]]))
+
+
+def _joint_pulse_activations(
+    *,
+    frames: int = 500,
+    period: int = 25,
+) -> EventActivations[np.ndarray]:
+    values = np.full((frames, 2), 0.001, dtype=np.float64)
+    for beat_index, frame in enumerate(range(period, frames, period)):
+        values[frame, 0] = 0.98
+        values[frame, 1] = 0.92 if beat_index % 4 == 0 else 0.02
+    return EventActivations(values)
+
+
+def test_causal_joint_dbn_emits_aligned_online_events() -> None:
+    tracker = dbn.CausalDBNDownbeatTracker(
+        beats_per_bar=[4],
+        min_bpm=100,
+        max_bpm=140,
+        fps=50,
+        num_tempi=20,
+    )
+
+    decoded, sources, emissions, frame_seconds = tracker.process_with_event_timing(
+        _joint_pulse_activations()
+    )
+
+    assert decoded.ndim == 2
+    assert decoded.shape[1] == 2
+    assert len(decoded) > 0
+    assert len(decoded) == len(sources) == len(emissions)
+    assert np.array_equal(sources, emissions)
+    assert decoded[:, 0] == pytest.approx(emissions / 50.0)
+    assert set(np.unique(decoded[:, 1])).issubset({1.0, 2.0, 3.0, 4.0})
+    assert frame_seconds.shape == (500,)
+    assert np.all(frame_seconds >= 0.0)
+
+
+def test_causal_joint_dbn_prefix_is_future_invariant() -> None:
+    activations = _joint_pulse_activations(frames=500)
+    prefix = EventActivations(activations.values[:300])
+    kwargs = {
+        "beats_per_bar": [3, 4],
+        "min_bpm": 100,
+        "max_bpm": 140,
+        "fps": 50,
+        "num_tempi": 20,
+    }
+
+    prefix_decoded = dbn.CausalDBNDownbeatTracker(**kwargs)(prefix)
+    full_decoded = dbn.CausalDBNDownbeatTracker(**kwargs)(activations)
+
+    assert full_decoded[full_decoded[:, 0] < 6.0] == pytest.approx(prefix_decoded)
+
+
+def test_causal_joint_dbn_rejects_offline_corrections_and_trimming() -> None:
+    with pytest.raises(ValueError, match="correct must be false"):
+        dbn.CausalDBNDownbeatTracker(correct=True)
+    with pytest.raises(ValueError, match="threshold must be 0"):
+        dbn.CausalDBNDownbeatTracker(threshold=0.05)

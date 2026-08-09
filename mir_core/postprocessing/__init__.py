@@ -6,7 +6,8 @@ activation functions to discrete beat times.
 
 Classes:
     DBNBeatTracker         — beat tracking from 1D activation (wraps madmom DBN).
-    DBNDownbeatTracker     — joint beat+downbeat tracking from two activations.
+    DBNDownbeatTracker     — offline joint beat+downbeat tracking.
+    CausalDBNDownbeatTracker — causal joint beat+downbeat forward decoding.
     DBNBarTracker          — bar (meter) tracking from beat times + downbeat activations.
     ParticleFilterTracker  — particle filter cascade for joint beat/downbeat tracking.
     Heydari1DStateSpaceTracker — jump-reward inference on Heydari's compact 1D state space.
@@ -26,6 +27,7 @@ from typing import Any
 _EXPORTS = {
     "DBNBeatTracker": (".dbn", "DBNBeatTracker"),
     "DBNDownbeatTracker": (".dbn", "DBNDownbeatTracker"),
+    "CausalDBNDownbeatTracker": (".dbn", "CausalDBNDownbeatTracker"),
     "DBNBarTracker": (".dbn", "DBNBarTracker"),
     "ParticleFilterTracker": (".particle_filter", "ParticleFilterTracker"),
     "Heydari1DStateSpaceTracker": (
@@ -51,6 +53,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "DBNBeatTracker",
     "DBNDownbeatTracker",
+    "CausalDBNDownbeatTracker",
     "DBNBarTracker",
     "ParticleFilterTracker",
     "Heydari1DStateSpaceTracker",
