@@ -212,6 +212,10 @@ def test_causal_joint_dbn_emits_aligned_online_events() -> None:
     assert np.array_equal(sources, emissions)
     assert decoded[:, 0] == pytest.approx(emissions / 50.0)
     assert set(np.unique(decoded[:, 1])).issubset({1.0, 2.0, 3.0, 4.0})
+    minimum_separation_frames = int(np.floor(60.0 * 50 / 140))
+    event_frames = np.rint(decoded[:, 0] * 50).astype(int)
+    assert np.all(np.diff(event_frames) >= minimum_separation_frames)
+    assert len(np.unique(event_frames)) == len(event_frames)
     assert frame_seconds.shape == (500,)
     assert np.all(frame_seconds >= 0.0)
 

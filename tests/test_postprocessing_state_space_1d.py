@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from mir_core.beats.schema import (
     ExclusiveBeatDownbeatActivations,
     to_exclusive_beat_downbeat_activation_data,
 )
+from mir_core.evaluation.metrics import compute_beat_metrics
 from mir_core.postprocessing.state_space_1d import Heydari1DStateSpaceTracker
 
 
@@ -16,6 +19,47 @@ def _decoder_activations(values: np.ndarray) -> ExclusiveBeatDownbeatActivations
     return to_exclusive_beat_downbeat_activation_data(
         EventActivations(values)
     )
+
+
+def _collision_regression_activations() -> ExclusiveBeatDownbeatActivations:
+    """Deterministic activations that exposed the selected sweep collision."""
+
+    rng = np.random.default_rng(4)
+    frame_count = 800
+    values = np.empty((frame_count, 2), dtype=np.float32)
+    values[:, 0] = rng.uniform(0.0, 0.08, frame_count)
+    values[:, 1] = rng.uniform(0.0, 0.03, frame_count)
+    pulse_frames = np.sort(
+        rng.choice(np.arange(10, frame_count - 10), size=70, replace=False)
+    )
+    for pulse_index, frame in enumerate(pulse_frames):
+        strength = rng.uniform(0.55, 0.99)
+        if pulse_index % 4 == 0:
+            values[frame, 1] = strength
+            values[frame, 0] = min(values[frame, 0], 1.0 - strength)
+        else:
+            values[frame, 0] = strength
+            values[frame, 1] = min(values[frame, 1], 1.0 - strength)
+    return _decoder_activations(values)
+
+
+def _selected_sweep_candidate_params(*, peak_snap_mode: str) -> dict[str, object]:
+    return {
+        "fps": 50,
+        "min_bpm": 80,
+        "max_bpm": 240,
+        "beats_per_bar": [2, 4],
+        "lambda_b": 0.005,
+        "lambda_d": 0.1,
+        "observation_lambda": "N4",
+        "downbeat_observation_lambda": "B60",
+        "offset": 0.0,
+        "ig_threshold": 0.4,
+        "min_separation_mode": "min_interval",
+        "peak_snap_window_frames": 12,
+        "peak_snap_mode": peak_snap_mode,
+        "peak_snap_threshold": None,
+    }
 
 
 def test_heydari_1d_state_space_tracker_returns_event_rows() -> None:
@@ -112,6 +156,78 @@ def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
     )
     assert len(decoded) == len(source_frames) == len(emission_frames)
     assert np.all(emission_frames >= source_frames)
+
+
+def test_heydari_1d_selected_candidate_suppresses_post_snap_collisions() -> None:
+    tracker = Heydari1DStateSpaceTracker(
+        **_selected_sweep_candidate_params(peak_snap_mode="center")
+    )
+
+    decoded, source_frames, emission_frames, _ = tracker.process_with_event_timing(
+        _collision_regression_activations()
+    )
+
+    minimum_separation = 0.45 * tracker.st.min_interval / tracker.fps
+    assert len(decoded) > 0
+    assert tracker.suppressed_event_count > 0
+    assert np.all(np.diff(decoded[:, 0]) > minimum_separation)
+    assert len(np.unique(decoded[:, 0])) == len(decoded)
+    assert len(decoded) == len(source_frames) == len(emission_frames)
+    assert np.all(emission_frames >= source_frames)
+
+
+def test_heydari_1d_collision_regression_is_metric_warning_free() -> None:
+    tracker = Heydari1DStateSpaceTracker(
+        **_selected_sweep_candidate_params(peak_snap_mode="center")
+    )
+    decoded = tracker.process(_collision_regression_activations())
+    annotations = np.arange(0.36, 16.0, 0.5)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        metrics = compute_beat_metrics(decoded[:, 0], annotations)
+
+    assert np.isfinite(metrics["information_gain"])
+
+
+def test_heydari_1d_collision_regression_has_exact_causal_replay() -> None:
+    activations = _collision_regression_activations()
+    params = _selected_sweep_candidate_params(peak_snap_mode="past")
+    batch_tracker = Heydari1DStateSpaceTracker(**params)
+    batch, source_frames, emission_frames, _ = (
+        batch_tracker.process_with_event_timing(activations)
+    )
+
+    stream_tracker = Heydari1DStateSpaceTracker(**params)
+    rows = []
+    for frame_index in range(len(activations.values)):
+        emitted = stream_tracker.process_frame(
+            ExclusiveBeatDownbeatActivations(
+                activations.values[frame_index : frame_index + 1],
+                definition=activations.definition,
+                downbeats_available=activations.downbeats_available,
+            )
+        )
+        if len(emitted):
+            rows.extend(emitted)
+    streamed = np.asarray(rows, dtype=float).reshape(-1, 4)
+
+    minimum_separation = 0.45 * batch_tracker.st.min_interval / batch_tracker.fps
+    np.testing.assert_allclose(streamed, batch)
+    assert batch_tracker.suppressed_event_count > 0
+    assert (
+        stream_tracker.suppressed_event_count
+        == batch_tracker.suppressed_event_count
+    )
+    assert np.all(np.diff(batch[:, 0]) > minimum_separation)
+    assert np.all(emission_frames >= source_frames)
+
+    # Batch decoding resets all state, including the refractory gate and its
+    # diagnostic counter, and therefore replays identically.
+    first_suppressed = batch_tracker.suppressed_event_count
+    replay = batch_tracker.process(activations)
+    np.testing.assert_allclose(replay, batch)
+    assert batch_tracker.suppressed_event_count == first_suppressed
 
 
 def test_heydari_1d_process_frame_matches_causal_batch_decode() -> None:

@@ -253,9 +253,37 @@ class Heydari1DStateSpaceTracker:
         self._local_tempo = 0
         self._meter = 0
         self._last_boundary_time = 0.0
+        self._last_emitted_event_time = float("-inf")
+        self._suppressed_event_count = 0
         self._input_frame_index = 0
         self._active_frame_index = 0
         self._activation_history: list[np.ndarray] = []
+
+    @property
+    def suppressed_event_count(self) -> int:
+        """Number of boundary candidates rejected by the output refractory gate."""
+
+        return self._suppressed_event_count
+
+    def _claim_event_time(
+        self,
+        event_time: float,
+        minimum_separation: float,
+    ) -> bool:
+        """Claim a final timestamp if it is safely after the last output.
+
+        Boundary separation is checked before peak snapping. Snapping can move
+        two otherwise valid boundaries onto the same (or an earlier) activation
+        peak, so the externally visible stream needs its own final gate. This
+        mirrors the last-emitted-event guards in the causal DBN and particle
+        filter trackers.
+        """
+
+        if event_time - self._last_emitted_event_time <= minimum_separation:
+            self._suppressed_event_count += 1
+            return False
+        self._last_emitted_event_time = event_time
+        return True
 
     @staticmethod
     def _validated_exclusive_values(
@@ -306,13 +334,24 @@ class Heydari1DStateSpaceTracker:
                 "is enabled"
             )
 
-        current_activations = values[0].copy()
+        decoded, _source_frame, _emission_frame = self._process_exclusive_frame(
+            values[0]
+        )
+        return decoded
+
+    def _process_exclusive_frame(
+        self,
+        activation: np.ndarray,
+    ) -> tuple[np.ndarray, int | None, int | None]:
+        """Advance one already-validated frame through the causal decoder."""
+
+        current_activations = np.asarray(activation, dtype=float).copy()
         source_frame_index = self._input_frame_index
         self._input_frame_index += 1
         self._activation_history.append(current_activations)
         start_frame = int(self.offset * self.fps)
         if source_frame_index < start_frame:
-            return np.empty((0, 4), dtype=float)
+            return np.empty((0, 4), dtype=float), None, None
 
         self._active_frame_index += 1
         frame_index = self._active_frame_index
@@ -358,6 +397,7 @@ class Heydari1DStateSpaceTracker:
 
         boundary_time = frame_index * frame_period + self.offset
         event_time = boundary_time
+        event_source_frame_index = source_frame_index
         peak_strength = activation_value
         if self.peak_snap_window_frames:
             lo = max(0, source_frame_index - self.peak_snap_window_frames)
@@ -365,6 +405,7 @@ class Heydari1DStateSpaceTracker:
             local_strength = np.max(history, axis=1)
             peak_offset = int(np.argmax(local_strength))
             peak_strength = float(local_strength[peak_offset])
+            event_source_frame_index = lo + peak_offset
             event_time = (lo + peak_offset) * frame_period
 
         if self.min_separation_mode == "local_tempo":
@@ -385,7 +426,14 @@ class Heydari1DStateSpaceTracker:
             and boundary_time - self._last_boundary_time > min_separation
             and enough_peak
         ):
-            return np.empty((0, 4), dtype=float)
+            return np.empty((0, 4), dtype=float), None, None
+
+        # Record the internal boundary even if peak snapping maps it onto a
+        # previously emitted event. Otherwise the same boundary can be retried
+        # on successive frames and create a cluster of duplicate candidates.
+        self._last_boundary_time = boundary_time
+        if not self._claim_event_time(event_time, min_separation):
+            return np.empty((0, 4), dtype=float), None, None
 
         if np.max(self.st2.jump_weights) > 1:
             self.st2.jump_weights = (
@@ -423,10 +471,13 @@ class Heydari1DStateSpaceTracker:
             down_max = int(np.argmax(self._down_distribution))
 
         label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
-        self._last_boundary_time = boundary_time
-        return np.asarray(
-            [[event_time, label, float(self._local_tempo), float(self._meter)]],
-            dtype=float,
+        return (
+            np.asarray(
+                [[event_time, label, float(self._local_tempo), float(self._meter)]],
+                dtype=float,
+            ),
+            event_source_frame_index,
+            source_frame_index,
         )
 
     def __call__(
@@ -470,6 +521,33 @@ class Heydari1DStateSpaceTracker:
                 np.empty(0, dtype=np.int64),
                 np.empty(0, dtype=np.int64),
                 np.empty(0, dtype=float),
+            )
+
+        # Causal batch replay and live frame-by-frame inference deliberately
+        # share the exact same decoder and output-refractory path. Centred and
+        # future snapping remain available only for explicit offline analysis.
+        if not self.peak_snap_window_frames or self.peak_snap_mode == "past":
+            output: list[np.ndarray] = []
+            source_frames: list[int] = []
+            emission_frames: list[int] = []
+            frame_seconds = np.zeros(len(values), dtype=float)
+            for frame_index, frame in enumerate(values):
+                frame_started = time.perf_counter()
+                decoded, source_frame, emission_frame = self._process_exclusive_frame(
+                    frame
+                )
+                frame_seconds[frame_index] = time.perf_counter() - frame_started
+                if len(decoded):
+                    output.extend(decoded)
+                    if source_frame is None or emission_frame is None:
+                        raise RuntimeError("Emitted event is missing timing metadata")
+                    source_frames.append(source_frame)
+                    emission_frames.append(emission_frame)
+            return (
+                np.vstack(output) if output else np.empty((0, 4), dtype=float),
+                np.asarray(source_frames, dtype=np.int64),
+                np.asarray(emission_frames, dtype=np.int64),
+                frame_seconds,
             )
 
         frame_period = 1.0 / self.fps
@@ -567,10 +645,15 @@ class Heydari1DStateSpaceTracker:
                 self.peak_snap_threshold is None
                 or peak_strength >= self.peak_snap_threshold
             )
-            if (
+            boundary_candidate = (
                 near_beat_boundary
                 and boundary_time - last_boundary_time > min_separation
                 and enough_peak
+            )
+            if boundary_candidate:
+                last_boundary_time = boundary_time
+            if boundary_candidate and self._claim_event_time(
+                current_time, min_separation
             ):
                 if np.max(self.st2.jump_weights) > 1:
                     self.st2.jump_weights = 0.2 * self.st2.jump_weights / np.max(
@@ -604,13 +687,9 @@ class Heydari1DStateSpaceTracker:
                     down_max = int(np.argmax(down_distribution))
 
                 label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
-                if output and current_time <= output[-1][0]:
-                    current_time = boundary_time
-                    event_source_frame_index = source_frame_index
                 output.append([current_time, label, float(local_tempo), float(meter)])
                 source_frames.append(event_source_frame_index)
                 emission_frames.append(emission_frame_index)
-                last_boundary_time = boundary_time
             frame_seconds[source_frame_index] = time.perf_counter() - frame_started
 
         if not output:
