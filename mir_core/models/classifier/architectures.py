@@ -7,12 +7,37 @@ Architectures (all share the same interface):
     MelCNNAttention     -- MelCNN + SE channel attention (~55K params).
     BeatNetLogSpectCNN    -- CNN on BeatNet LOG_SPECT features.
     EmbeddingStatsMLP   -- MLP over mean/std-pooled pretrained embeddings.
+    FramewiseEmbeddingMLP -- shared MLP per embedding frame, then mean logits.
     BeatNetConvClassifier -- Tiny head on BeatNet conv1 features (~5K params).
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _initialize_linear_layers(module: nn.Module, initialization: str) -> None:
+    """Apply an explicit, checkpointed initialization to every linear layer."""
+
+    normalized = str(initialization).strip().lower()
+    initializers = {
+        "pytorch_default": None,
+        "xavier_uniform": nn.init.xavier_uniform_,
+        "xavier_normal": nn.init.xavier_normal_,
+    }
+    if normalized not in initializers:
+        raise ValueError(
+            "initialization must be pytorch_default, xavier_uniform, or "
+            "xavier_normal."
+        )
+    initializer = initializers[normalized]
+    if initializer is None:
+        return
+    for layer in module.modules():
+        if isinstance(layer, nn.Linear):
+            initializer(layer.weight)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
 
 
 class MelCNN(nn.Module):
@@ -206,15 +231,30 @@ class EmbeddingStatsMLP(nn.Module):
         embedding_dim: int = 1024,
         hidden_dim: int = 256,
         dropout: float = 0.3,
+        hidden_layers: int = 1,
+        batch_norm: bool = False,
+        initialization: str = "pytorch_default",
     ):
         super().__init__()
         self.embedding_dim = int(embedding_dim)
-        self.classifier = nn.Sequential(
-            nn.Linear(self.embedding_dim * 2, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
+        if isinstance(hidden_layers, bool) or int(hidden_layers) != hidden_layers:
+            raise ValueError("hidden_layers must be a positive integer.")
+        hidden_layers = int(hidden_layers)
+        if hidden_layers < 1:
+            raise ValueError("hidden_layers must be a positive integer.")
+        layers: list[nn.Module] = []
+        input_dim = self.embedding_dim * 2
+        for _ in range(hidden_layers):
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            if batch_norm:
+                # Match the HEAR downstream head: normalization precedes
+                # dropout and ReLU for every hidden layer.
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.extend((nn.Dropout(dropout), nn.ReLU(inplace=True)))
+            input_dim = hidden_dim
+        layers.append(nn.Linear(input_dim, num_classes))
+        self.classifier = nn.Sequential(*layers)
+        _initialize_linear_layers(self.classifier, initialization)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 4:
@@ -223,6 +263,47 @@ class EmbeddingStatsMLP(nn.Module):
         mean = x.mean(dim=1)
         std = x.std(dim=1, unbiased=False)
         return self.classifier(torch.cat([mean, std], dim=-1))
+
+
+class FramewiseEmbeddingMLP(nn.Module):
+    """Frozen-embedding transfer head with causal mean logit aggregation.
+
+    TensorFlow's official YAMNet transfer-learning example applies the same
+    shallow classifier to every 1024-dimensional YAMNet frame and averages its
+    outputs for a clip decision.  Applying that operation to a right-aligned
+    prefix keeps the identical head usable for every validated live context
+    horizon.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 4,
+        embedding_dim: int = 1024,
+        hidden_dim: int = 512,
+        dropout: float = 0.0,
+        initialization: str = "pytorch_default",
+    ):
+        super().__init__()
+        self.embedding_dim = int(embedding_dim)
+        layers: list[nn.Module] = [
+            nn.Linear(self.embedding_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+        ]
+        if dropout > 0.0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(hidden_dim, num_classes))
+        self.classifier = nn.Sequential(*layers)
+        _initialize_linear_layers(self.classifier, initialization)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 4:
+            raise ValueError(f"Expected input shape (B, 1, F, T), got {tuple(x.shape)}.")
+        frames = x.squeeze(1).transpose(1, 2)  # (B, T, F)
+        if frames.shape[-1] != self.embedding_dim:
+            raise ValueError(
+                f"Expected embedding_dim={self.embedding_dim}, got {frames.shape[-1]}."
+            )
+        return self.classifier(frames).mean(dim=1)
 
 
 class BeatNetConvClassifier(nn.Module):
@@ -261,5 +342,6 @@ CLASSIFIER_ARCHITECTURES = {
     "mel_cnn_attention": MelCNNAttention,
     "beatnet_log_spect_cnn": BeatNetLogSpectCNN,
     "embedding_stats_mlp": EmbeddingStatsMLP,
+    "framewise_embedding_mlp": FramewiseEmbeddingMLP,
     "beatnet_conv": BeatNetConvClassifier,
 }

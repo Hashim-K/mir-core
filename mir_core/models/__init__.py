@@ -10,6 +10,7 @@ from .classifier.architectures import (
     BeatNetLogSpectCNN,
     CLASSIFIER_ARCHITECTURES,
     EmbeddingStatsMLP,
+    FramewiseEmbeddingMLP,
     MFCCCNN,
     MelCNN,
     MelCNNAttention,
