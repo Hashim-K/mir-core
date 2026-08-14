@@ -1,0 +1,18 @@
+{
+  "beats_per_bar": [
+    3,
+    4
+  ],
+  "correct": false,
+  "id": "stock-dbn",
+  "max_bpm": 215.0,
+  "meter_change_prob": 1e-07,
+  "method": "dbn_downbeat",
+  "min_bpm": 55.0,
+  "num_tempi": 60,
+  "num_threads": 1,
+  "observation_lambda": 16,
+  "online": true,
+  "threshold": 0.0,
+  "transition_lambda": 100.0
+}

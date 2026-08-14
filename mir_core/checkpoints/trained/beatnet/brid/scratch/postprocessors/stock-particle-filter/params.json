@@ -1,0 +1,18 @@
+{
+  "beats_per_bar": [],
+  "down_particle_size": 250,
+  "id": "stock-particle-filter",
+  "ig_threshold": 0.4,
+  "lambda_b": 60,
+  "lambda_d": 0.1,
+  "max_beats_per_bar": 4,
+  "max_bpm": 215.0,
+  "method": "particle_filter",
+  "min_beats_per_bar": 2,
+  "min_bpm": 55.0,
+  "num_tempi": 300,
+  "observation_lambda_b": "B56",
+  "observation_lambda_d": "B56",
+  "offset": 0,
+  "particle_size": 1500
+}

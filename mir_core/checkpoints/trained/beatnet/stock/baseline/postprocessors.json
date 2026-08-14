@@ -1,0 +1,64 @@
+{
+  "evaluation_postprocessors": [
+    {
+      "beats_per_bar": [],
+      "downbeat_observation_lambda": "B60",
+      "id": "stock-1d",
+      "ig_threshold": 0.4,
+      "lambda_b": 0.01,
+      "lambda_d": 0.01,
+      "max_beats_per_bar": 4,
+      "max_bpm": 215.0,
+      "method": "heydari_1d_state_space",
+      "min_beats_per_bar": 1,
+      "min_bpm": 55.0,
+      "min_separation_mode": "min_interval",
+      "observation_lambda": "B56",
+      "offset": 4.0,
+      "peak_snap_mode": "past",
+      "peak_snap_threshold": null,
+      "peak_snap_window_frames": 0
+    },
+    {
+      "beats_per_bar": [
+        3,
+        4
+      ],
+      "correct": false,
+      "id": "stock-dbn",
+      "max_bpm": 215.0,
+      "meter_change_prob": 1e-07,
+      "method": "dbn_downbeat",
+      "min_bpm": 55.0,
+      "num_tempi": 60,
+      "num_threads": 1,
+      "observation_lambda": 16,
+      "online": true,
+      "threshold": 0.0,
+      "transition_lambda": 100.0
+    },
+    {
+      "beats_per_bar": [],
+      "down_particle_size": 250,
+      "id": "stock-particle-filter",
+      "ig_threshold": 0.4,
+      "lambda_b": 60,
+      "lambda_d": 0.1,
+      "max_beats_per_bar": 4,
+      "max_bpm": 215.0,
+      "method": "particle_filter",
+      "min_beats_per_bar": 2,
+      "min_bpm": 55.0,
+      "num_tempi": 300,
+      "observation_lambda_b": "B56",
+      "observation_lambda_d": "B56",
+      "offset": 0,
+      "particle_size": 1500
+    }
+  ],
+  "schema": "mir.stock-beatnet-postprocessors/v1",
+  "source": {
+    "attempt_id": "beat-final-online-v3-20260811T1715Z-latin-general",
+    "experiment_hash": "btk-531c2f27e2d4e6dd"
+  }
+}

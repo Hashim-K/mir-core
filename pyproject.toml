@@ -12,6 +12,7 @@ description = "Shared Python package for MSc thesis MIR project"
 include = ["mir_core*", "mir_env*"]
 
 [tool.setuptools.package-data]
+"mir_core.checkpoints" = ["trained/**/*.pt", "trained/**/*.json", "trained/**/*.md"]
 "mir_core.checkpoints.beatnet" = ["*.pt", "*.md"]
 "mir_core.checkpoints.beatnet_plus" = ["*.pt", "*.md"]
 "mir_core.checkpoints.beast" = ["*.pt", "*.md"]

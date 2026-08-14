@@ -16,6 +16,17 @@ from .beatnet_plus import baseline_checkpoint_path as _beatnet_plus_baseline_che
 from .bocktcn import base_checkpoint_path as _bocktcn_base_checkpoint_path
 from .bocktcn import baseline_checkpoint_names as _bocktcn_baseline_checkpoint_names
 from .bocktcn import baseline_checkpoint_path as _bocktcn_baseline_checkpoint_path
+from .trained import (
+    TRAINED_MODEL_BUNDLE_SCHEMA,
+    TRAINED_MODELS_ROOT,
+    TrainedFile,
+    TrainedModelBundle,
+    beatnet_stock_postprocessor_selection_path,
+    list_trained_model_bundles,
+    load_trained_model_bundle,
+    trained_checkpoint_path,
+    trained_postprocessor_path,
+)
 
 
 def beatnet_base_checkpoint_path() -> Path:
@@ -94,12 +105,17 @@ def beast_baseline_checkpoint_names() -> tuple[str, ...]:
 
 
 __all__ = [
+    "TRAINED_MODEL_BUNDLE_SCHEMA",
+    "TRAINED_MODELS_ROOT",
+    "TrainedFile",
+    "TrainedModelBundle",
     "beast_base_checkpoint_path",
     "beast_baseline_checkpoint_names",
     "beast_baseline_checkpoint_path",
     "beatnet_base_checkpoint_path",
     "beatnet_baseline_checkpoint_names",
     "beatnet_baseline_checkpoint_path",
+    "beatnet_stock_postprocessor_selection_path",
     "beatnet_plus_base_checkpoint_path",
     "beatnet_plus_baseline_checkpoint_names",
     "beatnet_plus_baseline_checkpoint_path",
@@ -109,4 +125,8 @@ __all__ = [
     "bocktcn_base_checkpoint_path",
     "bocktcn_baseline_checkpoint_names",
     "bocktcn_baseline_checkpoint_path",
+    "list_trained_model_bundles",
+    "load_trained_model_bundle",
+    "trained_checkpoint_path",
+    "trained_postprocessor_path",
 ]

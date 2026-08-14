@@ -1,0 +1,19 @@
+{
+  "beats_per_bar": [],
+  "downbeat_observation_lambda": "B60",
+  "id": "stock-1d",
+  "ig_threshold": 0.4,
+  "lambda_b": 0.01,
+  "lambda_d": 0.01,
+  "max_beats_per_bar": 4,
+  "max_bpm": 215.0,
+  "method": "heydari_1d_state_space",
+  "min_beats_per_bar": 1,
+  "min_bpm": 55.0,
+  "min_separation_mode": "min_interval",
+  "observation_lambda": "B56",
+  "offset": 4.0,
+  "peak_snap_mode": "past",
+  "peak_snap_threshold": null,
+  "peak_snap_window_frames": 0
+}

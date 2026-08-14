@@ -1,0 +1,128 @@
+{
+  "bundle_id": "classifier/latin_router/yamnet",
+  "checkpoints": [
+    {
+      "best_metric": "val_loss",
+      "best_value": 0.2540343436619557,
+      "epoch": 78,
+      "fold_index": 0,
+      "path": "checkpoints/seed_42_fold_0.pt",
+      "runtime_policy_hash": "7286b7664129d13c1034705415daac8937affb3a28e06569233b8f0afd2e5218",
+      "selection_split": "validation",
+      "selector": "val_loss",
+      "sha256": "eaa7099304da6ba82c39c0276622004c4f48149f288b5ed2c04ba3f96d656e24",
+      "size_bytes": 2139128,
+      "state_dict_sha256": "1e33ac73758809995fcf47b8dcd68075707da09b8fd2254a972a54cbbe87c84b"
+    },
+    {
+      "best_metric": "val_loss",
+      "best_value": 0.1300708006107034,
+      "epoch": 81,
+      "fold_index": 1,
+      "path": "checkpoints/seed_42_fold_1.pt",
+      "runtime_policy_hash": "5265064fbaefeb1cf1c5d0cbf21d96bbb098e486eb66aa796403cff57f526aa7",
+      "selection_split": "validation",
+      "selector": "val_loss",
+      "sha256": "19eb497102c2ac0184b9020e5b4fe42cd4de4014c6dd5248c23b6d46787427e0",
+      "size_bytes": 2139128,
+      "state_dict_sha256": "43db6a4535400c0e2cfd3dbfb9de0f10002a274568c823218bc353dcb3295353"
+    },
+    {
+      "best_metric": "val_loss",
+      "best_value": 0.15423377111713205,
+      "epoch": 93,
+      "fold_index": 2,
+      "path": "checkpoints/seed_42_fold_2.pt",
+      "runtime_policy_hash": "136bfa20c64fe561ccde0999d17027c06bfe7c7f85ee9602e2c6d2cdf15d182d",
+      "selection_split": "validation",
+      "selector": "val_loss",
+      "sha256": "fdfb11d60eea8e0d8e88c15d09686fcd0f3b3f01bebb92a63f80613dd544108f",
+      "size_bytes": 2139128,
+      "state_dict_sha256": "6a2611f1c3184e0196649de5a79661c705f97d857c4edaafdb42628dabdf3ee3"
+    },
+    {
+      "best_metric": "val_loss",
+      "best_value": 0.1682662193362577,
+      "epoch": 63,
+      "fold_index": 3,
+      "path": "checkpoints/seed_42_fold_3.pt",
+      "runtime_policy_hash": "8f797a3d3693b4df30d79725a2719e222c81a17a4462477a39614b354abdea70",
+      "selection_split": "validation",
+      "selector": "val_loss",
+      "sha256": "5b6538ed6ad3b367fd2470ad3c3c95e9fb24dcbbee8b8f6de9ac9dd72fa0742b",
+      "size_bytes": 2139128,
+      "state_dict_sha256": "d9516a6e59573633d54d25f490195100ce10538cd1f0eba7a2b4e9376bab4048"
+    },
+    {
+      "best_metric": "val_loss",
+      "best_value": 0.13141865551813636,
+      "epoch": 96,
+      "fold_index": 4,
+      "path": "checkpoints/seed_42_fold_4.pt",
+      "runtime_policy_hash": "82c83c1e5f7f2274dfd888d30234e2500ee879d3b783bba3dbe510714236af7d",
+      "selection_split": "validation",
+      "selector": "val_loss",
+      "sha256": "de1db89a6a44dcc005c2f79861a72ed30d243164b88d163503c352788a798794",
+      "size_bytes": 2139064,
+      "state_dict_sha256": "f4111895957a92952103c8e620d0eac331acfdef379439999285159d2d9ce4e1"
+    }
+  ],
+  "condition": "yamnet",
+  "default_postprocessor": null,
+  "fold_count": 5,
+  "lifecycle": "candidate",
+  "model": {
+    "architecture": {
+      "arch": "framewise_embedding_mlp",
+      "dropout": 0.0,
+      "embedding_dim": 1024,
+      "hidden_dim": 512,
+      "initialization": "xavier_uniform"
+    },
+    "feature_config": {
+      "cache": true,
+      "memory_map_cache_size": 16,
+      "normalize_peak": false,
+      "patch_hop_seconds": 0.48,
+      "patch_window_seconds": 0.96,
+      "progress_every": 100,
+      "sample_rate": 16000,
+      "stft_hop_seconds": 0.01,
+      "stft_window_seconds": 0.025,
+      "tfhub_handle": "https://tfhub.dev/google/yamnet/1",
+      "type": "yamnet_embedding"
+    },
+    "labels": [
+      "candombe",
+      "brid",
+      "salsa",
+      "other"
+    ],
+    "name": "framewise_embedding_mlp",
+    "runtime_policy_embedded_per_fold": true
+  },
+  "model_family": "classifier",
+  "postprocessors": {},
+  "schema": "mir.trained-model-bundle/v2",
+  "seed": 42,
+  "source": {
+    "attempt_id": "classifier-20260813T225050Z-0d27da6155",
+    "checkpoint_selection_split": "validation",
+    "checkpoint_selector": "val_loss",
+    "experiment_hash": "clf-839371022f8f797e",
+    "git_commit": "0f7a5eaad2155e8edf8a52ddad4e9792b2b37957",
+    "scientific_config_hash": "839371022f8f797e7bde41f44198ec8797838e436925612ba75ee791ce8d36ed",
+    "test_used_for_checkpoint_selection": false
+  },
+  "split_contract": {
+    "contract_hash": "e2e-537f350dbaf7e925",
+    "n_folds": 5,
+    "plan_hash": "1611f0649e2d758c17d88b6310d63b074a11f258877a413dde6e48f7f5a9c56f",
+    "plan_membership_hash": "cd30621708377d2cbf660686245d91701a139042f94039b2552fe9094cbb87b4",
+    "records_hash": "ad5d6411d6c711bd8b3aa0e0443b2f58dd4430df69dc3c0428cb329af4df3213",
+    "universe": "latin-router-system-v1",
+    "validation_fraction": 0.1
+  },
+  "target": "latin_router",
+  "task": "classification"
+}
