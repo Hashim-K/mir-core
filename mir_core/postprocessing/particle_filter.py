@@ -11,8 +11,9 @@ Classes:
 # Author: Mojtaba Heydari <mheydari@ur.rochester.edu>
 # Adapted for mir_core by removing plotting/pyaudio dependencies.
 
+import math
+
 import numpy as np
-from numpy.random import default_rng
 from madmom.features.beats_hmm import BarStateSpace, BarTransitionModel
 from madmom.ml.hmm import TransitionModel, ObservationModel
 
@@ -21,9 +22,6 @@ from mir_core.beats.schema import (
     require_exclusive_beat_downbeat_activations,
     to_exclusive_beat_downbeat_activation_data,
 )
-
-rng = default_rng()
-
 
 class BDObservationModel(ObservationModel):
     """
@@ -88,35 +86,53 @@ def _gaussian(x, mu, sig):
 
 
 #   assigning beat vs non-beat weights
-def _beat_densities(observations, observation_model, state_model):
+def _beat_densities(
+    observations,
+    observation_model,
+    state_model,
+    background_weight,
+):
     new_obs = np.zeros(state_model.num_states, float)
     if len(np.shape(observation_model.pointers)) != 2:  # B or N
         new_obs[np.argwhere(observation_model.pointers == 2)] = observations
-        new_obs[np.argwhere(observation_model.pointers == 0)] = 0.03
+        new_obs[observation_model.pointers == 0] = background_weight
     elif len(np.shape(observation_model.pointers)) == 2:  # G
         new_obs = observation_model.pointers[0] * observations
-        new_obs[new_obs < 0.005] = 0.03
+        new_obs[new_obs < 0.005] = background_weight
     return new_obs
 
 
 #   assigning downbeat vs beat weights
-def _down_densities(observations, observation_model, state_model):
+def _down_densities(
+    observations,
+    observation_model,
+    state_model,
+    background_weight,
+):
     new_obs = np.zeros(state_model.num_states, float)
     if len(np.shape(observation_model.pointers)) != 2:  # B or N
-        new_obs[np.argwhere(
-            observation_model.pointers == 2)] = observations[1]
-        new_obs[np.argwhere(
-            observation_model.pointers == 0)] = observations[0]
+        new_obs[observation_model.pointers == 2] = observations[1]
+        new_obs[observation_model.pointers == 0] = observations[0]
     elif len(np.shape(observation_model.pointers)) == 2:  # G
-        new_obs = observation_model.pointers[0] * observations
-        new_obs[new_obs < 0.005] = 0.03
+        new_obs = (
+            observation_model.pointers[0] * observations[1]
+            + observation_model.pointers[1] * observations[0]
+        )
+        new_obs[new_obs < 0.005] = background_weight
     return new_obs
 
 
 def _universal_resample(particles, weights):
     J = len(particles)
-    weights = weights / sum(weights)
+    if J == 0:
+        raise ValueError("Cannot resample an empty particle population.")
+    total_weight = float(np.sum(weights))
+    if not math.isfinite(total_weight) or total_weight <= 0.0:
+        weights = np.full(J, 1.0 / J, dtype=float)
+    else:
+        weights = np.asarray(weights, dtype=float) / total_weight
     cumsum_weights = np.cumsum(weights)
+    cumsum_weights[-1] = 1.0
     r = np.random.uniform(0, 1 / J, J)
     U = r + np.arange(J) * (1 / J)
     new_particles = particles[np.searchsorted(cumsum_weights, U)]
@@ -148,6 +164,14 @@ class ParticleFilterTracker:
         observation_lambda_d: Downbeat observation lambda string (e.g. "B56")
         offset: Time offset (seconds) before inference starts
         ig_threshold: Information gate threshold
+        background_weight: Observation floor below the information gate
+        state_tolerance_seconds: Beat-state boundary tolerance
+        min_separation_fraction: Minimum event separation as a tempo-period fraction
+        downbeat_injection_threshold: Downbeat activation needed to inject particles
+        downbeat_activation_threshold: Downbeat activation needed to emit a downbeat
+        beat_activation_threshold: Combined activation needed to emit a beat
+        resampling_threshold: Combined activation needed to resample beat particles
+        beat_injection_threshold: Combined activation needed to inject beat particles
         beat_callback: Optional callback on each detected beat; receives bool (is_downbeat)
     """
 
@@ -165,6 +189,14 @@ class ParticleFilterTracker:
     MAX_BEAT_PER_BAR = 4
     OFFSET = 0
     IG_THRESHOLD = 0.4
+    BACKGROUND_WEIGHT = 0.03
+    STATE_TOLERANCE_SECONDS = 0.07
+    MIN_SEPARATION_FRACTION = 0.4
+    DOWNBEAT_INJECTION_THRESHOLD = 0.7
+    DOWNBEAT_ACTIVATION_THRESHOLD = 0.4
+    BEAT_ACTIVATION_THRESHOLD = 0.4
+    RESAMPLING_THRESHOLD = 0.1
+    BEAT_INJECTION_THRESHOLD = 0.8
 
     def __init__(
         self,
@@ -177,16 +209,130 @@ class ParticleFilterTracker:
         particle_size: int = PARTICLE_SIZE,
         down_particle_size: int = DOWN_PARTICLE_SIZE,
         num_tempi: int = NUM_TEMPI,
-        lambda_b: int = LAMBDA_B,
+        lambda_b: float = LAMBDA_B,
         lambda_d: float = LAMBDA_D,
         observation_lambda_b: str = OBSERVATION_LAMBDA_B,
         observation_lambda_d: str = OBSERVATION_LAMBDA_D,
-        offset: int = OFFSET,
+        offset: float = OFFSET,
         ig_threshold: float = IG_THRESHOLD,
+        background_weight: float = BACKGROUND_WEIGHT,
+        state_tolerance_seconds: float = STATE_TOLERANCE_SECONDS,
+        min_separation_fraction: float = MIN_SEPARATION_FRACTION,
+        downbeat_injection_threshold: float = DOWNBEAT_INJECTION_THRESHOLD,
+        downbeat_activation_threshold: float = DOWNBEAT_ACTIVATION_THRESHOLD,
+        beat_activation_threshold: float = BEAT_ACTIVATION_THRESHOLD,
+        resampling_threshold: float = RESAMPLING_THRESHOLD,
+        beat_injection_threshold: float = BEAT_INJECTION_THRESHOLD,
         beat_callback=None,
     ):
         if beats_per_bar is None:
             beats_per_bar = []
+
+        fps = float(fps)
+        min_bpm = float(min_bpm)
+        max_bpm = float(max_bpm)
+        particle_size = int(particle_size)
+        down_particle_size = int(down_particle_size)
+        num_tempi = int(num_tempi)
+        lambda_b = float(lambda_b)
+        lambda_d = float(lambda_d)
+        min_beats_per_bar = int(min_beats_per_bar)
+        max_beats_per_bar = int(max_beats_per_bar)
+        beats_per_bar = [int(value) for value in beats_per_bar]
+        offset = float(offset)
+        observation_lambda_b = str(observation_lambda_b)
+        observation_lambda_d = str(observation_lambda_d)
+        ig_threshold = float(ig_threshold)
+
+        if not math.isfinite(fps) or fps <= 0.0:
+            raise ValueError("Particle-filter fps must be positive and finite.")
+        if (
+            not math.isfinite(min_bpm)
+            or not math.isfinite(max_bpm)
+            or min_bpm <= 0.0
+            or min_bpm >= max_bpm
+        ):
+            raise ValueError(
+                "Particle-filter min_bpm and max_bpm must be positive and "
+                "min_bpm must be lower than max_bpm."
+            )
+        if particle_size < 1 or down_particle_size < 1 or num_tempi < 1:
+            raise ValueError(
+                "Particle-filter particle sizes and num_tempi must be at least 1."
+            )
+        if not math.isfinite(lambda_b) or lambda_b <= 0.0:
+            raise ValueError("Particle-filter lambda_b must be positive and finite.")
+        if not math.isfinite(lambda_d) or not 0.0 <= lambda_d <= 1.0:
+            raise ValueError("Particle-filter lambda_d must be between 0 and 1.")
+        if min_beats_per_bar < 1 or min_beats_per_bar > max_beats_per_bar:
+            raise ValueError(
+                "Particle-filter meter bounds must be positive and ordered."
+            )
+        if beats_per_bar and (
+            any(value < 1 for value in beats_per_bar)
+            or len(set(beats_per_bar)) != len(beats_per_bar)
+        ):
+            raise ValueError(
+                "Particle-filter beats_per_bar must contain unique positive integers."
+            )
+        if not math.isfinite(offset) or offset < 0.0:
+            raise ValueError("Particle-filter offset must be finite and non-negative.")
+        for name, value in (
+            ("ig_threshold", ig_threshold),
+            ("background_weight", background_weight),
+            ("downbeat_injection_threshold", downbeat_injection_threshold),
+            ("downbeat_activation_threshold", downbeat_activation_threshold),
+            ("beat_activation_threshold", beat_activation_threshold),
+            ("resampling_threshold", resampling_threshold),
+            ("beat_injection_threshold", beat_injection_threshold),
+        ):
+            value = float(value)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"Particle-filter {name} must be finite and between 0 and 1."
+                )
+        state_tolerance_seconds = float(state_tolerance_seconds)
+        min_separation_fraction = float(min_separation_fraction)
+        if (
+            not math.isfinite(state_tolerance_seconds)
+            or state_tolerance_seconds < 0.0
+        ):
+            raise ValueError(
+                "Particle-filter state_tolerance_seconds must be finite and "
+                "non-negative."
+            )
+        if (
+            not math.isfinite(min_separation_fraction)
+            or min_separation_fraction < 0.0
+        ):
+            raise ValueError(
+                "Particle-filter min_separation_fraction must be finite and "
+                "non-negative."
+            )
+        for name, value in (
+            ("observation_lambda_b", observation_lambda_b),
+            ("observation_lambda_d", observation_lambda_d),
+        ):
+            token = str(value)
+            if len(token) < 2 or token[0] not in {"B", "N", "G"}:
+                raise ValueError(
+                    f"Particle-filter {name} must use B, N, or G followed by "
+                    "a positive value."
+                )
+            try:
+                suffix = float(token[1:])
+            except ValueError as exc:
+                raise ValueError(
+                    f"Particle-filter {name} must end in a positive number."
+                ) from exc
+            if not math.isfinite(suffix) or suffix <= 0.0:
+                raise ValueError(
+                    f"Particle-filter {name} must end in a positive number."
+                )
+            if token[0] in {"B", "N"} and not suffix.is_integer():
+                raise ValueError(
+                    f"Particle-filter {name} requires an integer B/N value."
+                )
 
         self.particle_size = particle_size
         self.down_particle_size = down_particle_size
@@ -200,6 +346,18 @@ class ParticleFilterTracker:
         self.max_beats_per_bar = max_beats_per_bar
         self.offset = offset
         self.ig_threshold = ig_threshold
+        self.background_weight = float(background_weight)
+        self.state_tolerance_seconds = state_tolerance_seconds
+        self.min_separation_fraction = min_separation_fraction
+        self.downbeat_injection_threshold = float(
+            downbeat_injection_threshold
+        )
+        self.downbeat_activation_threshold = float(
+            downbeat_activation_threshold
+        )
+        self.beat_activation_threshold = float(beat_activation_threshold)
+        self.resampling_threshold = float(resampling_threshold)
+        self.beat_injection_threshold = float(beat_injection_threshold)
         self.beat_callback = beat_callback
 
         # Convert timing information to construct a beat state space
@@ -223,13 +381,17 @@ class ParticleFilterTracker:
         self.om = BDObservationModel(self.st, self.observation_lambda_b)  # beat observation model
         self.st.last_states = list(np.concatenate(self.st.last_states).flat)  # beat last states
         self.om2 = BDObservationModel(self.st2, self.observation_lambda_d)  # downbeat observation model
-        self.tm2 = np.zeros((len(self.st2.first_states[0]), len(self.st2.first_states[0])))  # downbeat transition model
-        for i in range(len(self.st2.first_states[0])):
-            for j in range(len(self.st2.first_states[0])):
-                if i == j:
-                    self.tm2[i, j] = 1 - self.Lambda_d
-                else:
-                    self.tm2[i, j] = self.Lambda_d / (len(self.st2.first_states[0]) - 1)
+        downbeat_states = len(self.st2.first_states[0])
+        self.tm2 = np.zeros((downbeat_states, downbeat_states))
+        if downbeat_states == 1:
+            self.tm2[0, 0] = 1.0
+        else:
+            for i in range(downbeat_states):
+                for j in range(downbeat_states):
+                    if i == j:
+                        self.tm2[i, j] = 1 - self.Lambda_d
+                    else:
+                        self.tm2[i, j] = self.Lambda_d / (downbeat_states - 1)
 
         self.T = 1 / self.fps
         self.counter = -1
@@ -286,7 +448,9 @@ class ParticleFilterTracker:
         values = values[int(self.offset / self.T):]
         both_activations = values.copy()
         combined_activations = np.max(values, axis=1)
-        combined_activations[combined_activations < self.ig_threshold] = 0.03
+        combined_activations[
+            combined_activations < self.ig_threshold
+        ] = self.background_weight
         self.activations = combined_activations
         self.both_activations = both_activations
 
@@ -295,7 +459,7 @@ class ParticleFilterTracker:
             gathering = int(np.median(self.particles))  # calculating beat particles clutter
             # checking if the clutter is within the beat interval
             if ((gathering - self.beat[self.st.state_intervals[self.beat] == self.st.state_intervals[gathering]]) < (
-                    int(.07 / self.T)) + 1).any() and (self.offset + self.counter * self.T) - self.path[-1][0] > .4 * self.T * \
+                    int(self.state_tolerance_seconds / self.T)) + 1).any() and (self.offset + self.counter * self.T) - self.path[-1][0] > self.min_separation_fraction * self.T * \
                     self.st.state_intervals[gathering]:
 
                 # downbeat particles motion
@@ -308,21 +472,36 @@ class ParticleFilterTracker:
                 self.down_particles = state1
 
                 # downbeat particles correction
-                if both_activations[i][1] > 0.7:
-                    self.down_particles = np.append(self.down_particles, np.array([self.st2.first_states]))
-                obs2 = _down_densities(both_activations[i], self.om2, self.st2)
+                injected_downbeat_count = 0
+                if both_activations[i][1] > self.downbeat_injection_threshold:
+                    injected = np.concatenate(self.st2.first_states).reshape(-1)
+                    injected_downbeat_count = len(injected)
+                    self.down_particles = np.append(self.down_particles, injected)
+                obs2 = _down_densities(
+                    both_activations[i],
+                    self.om2,
+                    self.st2,
+                    self.background_weight,
+                )
                 self.down_particles = _universal_resample(self.down_particles, obs2[self.down_particles])
-                if both_activations[i][1] > 0.7:
-                    self.down_particles = np.delete(self.down_particles, np.random.choice(self.down_particle_size, len(self.st2.first_states), replace=False))
+                if injected_downbeat_count:
+                    # np.delete is not in-place.  Assign its result and remove
+                    # the actual number injected so the population stays fixed.
+                    remove = np.random.choice(
+                        len(self.down_particles),
+                        injected_downbeat_count,
+                        replace=False,
+                    )
+                    self.down_particles = np.delete(self.down_particles, remove)
                 m = np.bincount(self.down_particles)
                 self.down_max = np.argmax(m)  # calculating downbeat particles clutter
 
                 # beat vs downbeat distinguishment
-                if self.down_max in self.st2.first_states[0] and self.path[-1][1] != 1 and both_activations[i][1] > 0.4:
+                if self.down_max in self.st2.first_states[0] and self.path[-1][1] != 1 and both_activations[i][1] > self.downbeat_activation_threshold:
                     self.path = np.append(self.path, [[self.offset + self.counter * self.T, 1]], axis=0)
                     if self.beat_callback is not None:
                         self.beat_callback(True)
-                elif (combined_activations[i] > 0.4):
+                elif combined_activations[i] > self.beat_activation_threshold:
                     self.path = np.append(self.path, [[self.offset + self.counter * self.T, 2]], axis=0)
                     if self.beat_callback is not None:
                         self.beat_callback(False)
@@ -338,12 +517,35 @@ class ParticleFilterTracker:
             self.particles = state
 
             # beat particles correction
-            obs = _beat_densities(combined_activations[i], self.om, self.st)
-            if combined_activations[i] > 0.1:  # resampling is done only when there is a meaningful activation
-                if combined_activations[i] > 0.8:
-                    self.particles = np.append(self.particles, np.array([self.st.first_states[0][np.arange(np.random.randint(4), len(self.st.first_states[0]), 6)]]))
+            obs = _beat_densities(
+                combined_activations[i],
+                self.om,
+                self.st,
+                self.background_weight,
+            )
+            if combined_activations[i] > self.resampling_threshold:
+                injected_beat_count = 0
+                if combined_activations[i] > self.beat_injection_threshold:
+                    injected = np.asarray(
+                        self.st.first_states[0][
+                            np.arange(
+                                np.random.randint(4),
+                                len(self.st.first_states[0]),
+                                6,
+                            )
+                        ]
+                    ).reshape(-1)
+                    injected_beat_count = len(injected)
+                    self.particles = np.append(self.particles, injected)
                 self.particles = _universal_resample(self.particles, obs[self.particles])  # beat correction
-                if combined_activations[i] > 0.8:
-                    np.delete(self.particles, np.random.choice(self.particle_size, len(self.st.first_states), replace=False))
+                if injected_beat_count:
+                    # BeatNet discarded np.delete's return value and used the
+                    # first-state container length rather than the injected count.
+                    remove = np.random.choice(
+                        len(self.particles),
+                        injected_beat_count,
+                        replace=False,
+                    )
+                    self.particles = np.delete(self.particles, remove)
 
         return self.path[1:]

@@ -21,9 +21,7 @@ def test_particle_filter_accepts_two_channel_activations_at_fractional_fps() -> 
     )
 
     decoded = tracker.process(
-        ExclusiveBeatDownbeatActivations(
-            np.zeros((4, 2), dtype=np.float32)
-        )
+        ExclusiveBeatDownbeatActivations(np.zeros((4, 2), dtype=np.float32))
     )
 
     assert tracker.fps == pytest.approx(fps)
@@ -51,9 +49,7 @@ def test_particle_filter_rejects_nonexclusive_probability_rows() -> None:
 
     with pytest.raises(ValueError, match="sum to at most 1"):
         tracker.process(
-            ExclusiveBeatDownbeatActivations(
-                np.asarray([[0.9, 0.2]], dtype=np.float32)
-            )
+            ExclusiveBeatDownbeatActivations(np.asarray([[0.9, 0.2]], dtype=np.float32))
         )
 
 
@@ -109,3 +105,56 @@ def test_particle_filter_enforces_last_emitted_event_refractory() -> None:
     assert np.all(np.diff(decoded[:, 0]) > minimum_separation)
     assert len(np.unique(decoded[:, 0])) == len(decoded)
     assert set(np.unique(decoded[:, 1])).issubset({1.0, 2.0})
+
+
+def test_particle_filter_keeps_bounded_populations_after_injection() -> None:
+    random_state = np.random.get_state()
+    try:
+        np.random.seed(13)
+        tracker = ParticleFilterTracker(
+            fps=50,
+            min_bpm=80,
+            max_bpm=180,
+            particle_size=120,
+            down_particle_size=24,
+            num_tempi=30,
+            beat_injection_threshold=0.5,
+            downbeat_injection_threshold=0.5,
+        )
+        # Exercise both paths: the combined activation injects beat particles,
+        # while the downbeat channel injects downbeat particles.
+        values = np.tile(np.asarray([[0.35, 0.6]], dtype=np.float32), (300, 1))
+
+        decoded = tracker.process(ExclusiveBeatDownbeatActivations(values))
+    finally:
+        np.random.set_state(random_state)
+
+    assert len(decoded) > 0
+    assert len(tracker.particles) == tracker.particle_size
+    assert len(tracker.down_particles) == tracker.down_particle_size
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value", "message"),
+    [
+        ("min_bpm", 220, "min_bpm"),
+        ("lambda_d", 1.1, "lambda_d"),
+        ("beat_activation_threshold", -0.1, "beat_activation_threshold"),
+        ("observation_lambda_b", "broken", "observation_lambda_b"),
+    ],
+)
+def test_particle_filter_rejects_invalid_tunable_parameters(
+    parameter: str,
+    value: object,
+    message: str,
+) -> None:
+    kwargs = {
+        "max_bpm": 215,
+        "particle_size": 100,
+        "down_particle_size": 20,
+        "num_tempi": 30,
+        parameter: value,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        ParticleFilterTracker(**kwargs)
