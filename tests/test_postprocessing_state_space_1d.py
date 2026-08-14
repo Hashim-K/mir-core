@@ -275,6 +275,69 @@ def test_heydari_1d_process_frame_reset_is_repeatable() -> None:
     np.testing.assert_allclose(second, first)
 
 
+def test_heydari_1d_activation_trigger_emits_at_current_frame() -> None:
+    fps = 50
+    pulse_frames = np.asarray([5, 20, 35])
+    activations = np.full((50, 2), 0.05, dtype=np.float32)
+    activations[pulse_frames, 0] = 0.9
+    activations[pulse_frames, 1] = [0.8, 0.1, 0.1]
+
+    tracker = Heydari1DStateSpaceTracker(
+        fps=fps,
+        offset=0.0,
+        min_bpm=60.0,
+        max_bpm=300.0,
+        event_trigger_mode="activation_threshold",
+        event_activation_threshold=0.5,
+        downbeat_activation_threshold=0.4,
+        min_separation_fraction=0.5,
+    )
+    decoded, source_frames, emission_frames, _ = tracker.process_with_event_timing(
+        _decoder_activations(activations)
+    )
+
+    np.testing.assert_array_equal(source_frames, pulse_frames)
+    np.testing.assert_array_equal(emission_frames, pulse_frames)
+    np.testing.assert_allclose(decoded[:, 0], pulse_frames / fps)
+    np.testing.assert_array_equal(decoded[:, 1], [1.0, 2.0, 2.0])
+
+
+def test_heydari_1d_activation_trigger_has_exact_frame_replay() -> None:
+    activations = np.full((60, 2), 0.05, dtype=np.float32)
+    activations[[5, 20, 35, 50], 0] = 0.9
+    tagged = _decoder_activations(activations)
+    params = {
+        "fps": 50,
+        "offset": 0.0,
+        "event_trigger_mode": "activation_threshold",
+        "event_activation_threshold": 0.5,
+    }
+
+    batch = Heydari1DStateSpaceTracker(**params).process(tagged)
+    stream_tracker = Heydari1DStateSpaceTracker(**params)
+    rows = []
+    for frame_index in range(len(tagged.values)):
+        emitted = stream_tracker.process_frame(
+            ExclusiveBeatDownbeatActivations(
+                tagged.values[frame_index : frame_index + 1],
+                definition=tagged.definition,
+                downbeats_available=tagged.downbeats_available,
+            )
+        )
+        rows.extend(emitted)
+
+    np.testing.assert_allclose(np.asarray(rows).reshape(-1, 4), batch)
+
+
+def test_heydari_1d_activation_trigger_rejects_retrospective_snap() -> None:
+    with pytest.raises(ValueError, match="cannot use retrospective peak snapping"):
+        Heydari1DStateSpaceTracker(
+            event_trigger_mode="activation_threshold",
+            peak_snap_window_frames=1,
+            peak_snap_mode="past",
+        )
+
+
 def test_heydari_1d_process_frame_rejects_future_peak_snap() -> None:
     tracker = Heydari1DStateSpaceTracker(
         peak_snap_window_frames=2,

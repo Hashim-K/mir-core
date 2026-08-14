@@ -154,6 +154,11 @@ class Heydari1DStateSpaceTracker:
     probabilities. The return value follows the reference package:
     ``(time_seconds, label, local_tempo_bpm, local_meter)``, where label ``1``
     marks downbeats and label ``2`` marks non-downbeat beats.
+
+    ``state_boundary`` preserves the reference event decision. For live
+    actuation, ``activation_threshold`` emits on the current all-beat
+    activation crossing while retaining the state-space tempo and meter
+    estimates. The latter never backdates an event or waits for a later peak.
     """
 
     MIN_BPM = 55.0
@@ -166,6 +171,9 @@ class Heydari1DStateSpaceTracker:
     MAX_BEATS_PER_BAR = 4
     OFFSET = 4.0
     IG_THRESHOLD = 0.4
+    EVENT_ACTIVATION_THRESHOLD = 0.5
+    DOWNBEAT_ACTIVATION_THRESHOLD = 0.4
+    MIN_SEPARATION_FRACTION = 0.45
 
     def __init__(
         self,
@@ -183,6 +191,10 @@ class Heydari1DStateSpaceTracker:
         offset: float = OFFSET,
         ig_threshold: float = IG_THRESHOLD,
         min_separation_mode: str = "min_interval",
+        min_separation_fraction: float = MIN_SEPARATION_FRACTION,
+        event_trigger_mode: str = "state_boundary",
+        event_activation_threshold: float = EVENT_ACTIVATION_THRESHOLD,
+        downbeat_activation_threshold: float = DOWNBEAT_ACTIVATION_THRESHOLD,
         peak_snap_window_frames: int = 0,
         peak_snap_mode: str = "center",
         peak_snap_threshold: float | None = None,
@@ -206,6 +218,18 @@ class Heydari1DStateSpaceTracker:
             self.min_separation_mode = "min_interval"
         elif self.min_separation_mode in {"local", "tempo", "estimated"}:
             self.min_separation_mode = "local_tempo"
+        self.min_separation_fraction = float(min_separation_fraction)
+        self.event_trigger_mode = str(event_trigger_mode).strip().lower()
+        if self.event_trigger_mode in {"state", "boundary"}:
+            self.event_trigger_mode = "state_boundary"
+        elif self.event_trigger_mode in {
+            "activation",
+            "threshold",
+            "threshold_crossing",
+        }:
+            self.event_trigger_mode = "activation_threshold"
+        self.event_activation_threshold = float(event_activation_threshold)
+        self.downbeat_activation_threshold = float(downbeat_activation_threshold)
         self.peak_snap_window_frames = int(peak_snap_window_frames)
         self.peak_snap_mode = str(peak_snap_mode).lower()
         if self.peak_snap_mode == "causal":
@@ -217,10 +241,36 @@ class Heydari1DStateSpaceTracker:
             raise ValueError(
                 "min_separation_mode must be 'min_interval' or 'local_tempo'."
             )
+        if not np.isfinite(self.min_separation_fraction) or not (
+            0.0 < self.min_separation_fraction <= 1.0
+        ):
+            raise ValueError("min_separation_fraction must be in (0, 1].")
+        if self.event_trigger_mode not in {
+            "state_boundary",
+            "activation_threshold",
+        }:
+            raise ValueError(
+                "event_trigger_mode must be 'state_boundary' or "
+                "'activation_threshold'."
+            )
+        for name, value in (
+            ("event_activation_threshold", self.event_activation_threshold),
+            ("downbeat_activation_threshold", self.downbeat_activation_threshold),
+        ):
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and in [0, 1].")
         if self.peak_snap_window_frames < 0:
             raise ValueError("peak_snap_window_frames must be >= 0.")
         if self.peak_snap_mode not in {"center", "past", "future"}:
             raise ValueError("peak_snap_mode must be 'center', 'past', or 'future'.")
+        if (
+            self.event_trigger_mode == "activation_threshold"
+            and self.peak_snap_window_frames
+        ):
+            raise ValueError(
+                "activation_threshold events are emitted immediately and cannot "
+                "use retrospective peak snapping."
+            )
 
         min_interval = round(60.0 * self.fps / self.max_bpm)
         max_interval = round(60.0 * self.fps / self.min_bpm)
@@ -252,16 +302,20 @@ class Heydari1DStateSpaceTracker:
         self._down_distribution = np.ones(self.st2.num_states, dtype=float) * 0.8
         self._local_tempo = 0
         self._meter = 0
+        # A short start-up refractory suppresses the common priming activation
+        # at frame zero; there is no preceding audio from which a live system
+        # could have made a reliable onset decision.
         self._last_boundary_time = 0.0
         self._last_emitted_event_time = float("-inf")
         self._suppressed_event_count = 0
         self._input_frame_index = 0
         self._active_frame_index = 0
+        self._previous_event_activation_value = 0.0
         self._activation_history: list[np.ndarray] = []
 
     @property
     def suppressed_event_count(self) -> int:
-        """Number of boundary candidates rejected by the output refractory gate."""
+        """Number of event candidates rejected by the output refractory gate."""
 
         return self._suppressed_event_count
 
@@ -322,7 +376,9 @@ class Heydari1DStateSpaceTracker:
         This is the deployment API. It preserves the tracker distributions and
         jump rewards between calls and therefore has constant work per audio
         frame. Future/centred peak snapping is deliberately rejected because it
-        cannot be emitted causally; use ``past`` snapping or a zero-frame window.
+        cannot be emitted causally. Activation-triggered output requires a
+        zero-frame window because even retrospective snapping would backdate
+        the event seen by a live actuator.
         """
 
         values = self._validated_exclusive_values(activation)
@@ -348,7 +404,12 @@ class Heydari1DStateSpaceTracker:
         current_activations = np.asarray(activation, dtype=float).copy()
         source_frame_index = self._input_frame_index
         self._input_frame_index += 1
-        self._activation_history.append(current_activations)
+        raw_activation_value = float(np.max(current_activations))
+        event_activation_value = float(np.sum(current_activations))
+        previous_event_activation_value = self._previous_event_activation_value
+        self._previous_event_activation_value = event_activation_value
+        if self.peak_snap_window_frames:
+            self._activation_history.append(current_activations)
         start_frame = int(self.offset * self.fps)
         if source_frame_index < start_frame:
             return np.empty((0, 4), dtype=float), None, None
@@ -356,7 +417,7 @@ class Heydari1DStateSpaceTracker:
         self._active_frame_index += 1
         frame_index = self._active_frame_index
         frame_period = 1.0 / self.fps
-        activation_value = float(np.max(current_activations))
+        activation_value = raw_activation_value
         if activation_value < self.ig_threshold:
             activation_value = 0.03
 
@@ -408,6 +469,19 @@ class Heydari1DStateSpaceTracker:
             event_source_frame_index = lo + peak_offset
             event_time = (lo + peak_offset) * frame_period
 
+        activation_crossing = (
+            event_activation_value >= self.event_activation_threshold
+            and previous_event_activation_value < self.event_activation_threshold
+        )
+        if self.event_trigger_mode == "activation_threshold":
+            # This frame's activation is available now.  Its musical timestamp
+            # is the frame timestamp, while the separately reported emission
+            # frame captures the one-hop software availability delay used by
+            # RT-F1 and the actuator benchmark.
+            event_time = source_frame_index * frame_period
+            event_source_frame_index = source_frame_index
+            peak_strength = event_activation_value
+
         if self.min_separation_mode == "local_tempo":
             separation_interval = max(
                 self.st.min_interval,
@@ -415,14 +489,21 @@ class Heydari1DStateSpaceTracker:
             )
         else:
             separation_interval = self.st.min_interval
-        min_separation = 0.45 * frame_period * separation_interval
+        min_separation = (
+            self.min_separation_fraction * frame_period * separation_interval
+        )
         near_beat_boundary = beat_max < int(0.07 / frame_period) + 1
-        enough_peak = (
+        event_triggered = (
+            near_beat_boundary
+            if self.event_trigger_mode == "state_boundary"
+            else activation_crossing
+        )
+        enough_peak = self.event_trigger_mode == "activation_threshold" or (
             self.peak_snap_threshold is None
             or peak_strength >= self.peak_snap_threshold
         )
         if not (
-            near_beat_boundary
+            event_triggered
             and boundary_time - self._last_boundary_time > min_separation
             and enough_peak
         ):
@@ -470,7 +551,14 @@ class Heydari1DStateSpaceTracker:
             self.st2.jump_weights[: self.st2.min_interval - 1] = 0
             down_max = int(np.argmax(self._down_distribution))
 
-        label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
+        if self.event_trigger_mode == "activation_threshold":
+            label = (
+                1.0
+                if float(current_activations[1]) >= self.downbeat_activation_threshold
+                else 2.0
+            )
+        else:
+            label = 1.0 if down_max == int(self.st2.first_states[0]) else 2.0
         return (
             np.asarray(
                 [[event_time, label, float(self._local_tempo), float(self._meter)]],
