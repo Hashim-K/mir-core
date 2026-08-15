@@ -14,6 +14,7 @@ Functions:
     compute_realtime_event_times — event times after software availability delay.
     compute_realtime_event_metrics — precision/recall/RT-F1 at one tolerance.
     compute_realtime_f1_curve — RT-F1 across the thesis tolerance curve.
+    compute_joint_realtime_f1_curve — pointwise joint RT-F1 and its nAUC.
     evaluate_beats           — aggregate metrics across multiple tracks.
     evaluate_downbeats       — aggregate downbeat metrics.
     evaluate_tempo           — tempo evaluation with Acc1/Acc2.
@@ -273,11 +274,11 @@ def compute_realtime_f1_curve(
     events_ann: np.ndarray,
     tolerances: Sequence[float] = DEFAULT_REALTIME_TOLERANCES_SECONDS,
 ) -> Dict[str, Any]:
-    """Compute the thesis RT-F1 tolerance curve and normalized AUC.
+    """Compute the thesis RT-F1 tolerance curve and normalized AUC (nAUC).
 
-    The returned AUC is normalized by the tolerance span, so it remains on the
+    The returned nAUC is normalized by the tolerance span, so it remains on the
     same 0–1 scale as F1.  The default curve evaluates 30, 50, 70, 100, and
-    150 ms.  A one-point curve has that point's F1 as its AUC.
+    150 ms.  A one-point curve has that point's F1 as its nAUC.
     """
 
     tolerance_values = np.asarray(tuple(tolerances), dtype=float).reshape(-1)
@@ -303,24 +304,90 @@ def compute_realtime_f1_curve(
     recall = np.asarray([row["rt_recall"] for row in rows], dtype=float)
     f1 = np.asarray([row["rt_f1"] for row in rows], dtype=float)
     matched = np.asarray([row["rt_matched"] for row in rows], dtype=float)
-    if len(tolerance_values) == 1:
-        auc = float(f1[0])
-    else:
-        auc = float(
-            np.trapz(f1, tolerance_values)
-            / (tolerance_values[-1] - tolerance_values[0])
-        )
+    nauc = compute_normalized_curve_area(f1, tolerance_values)
     return {
         "tolerances_seconds": tolerance_values,
         "precision": precision,
         "recall": recall,
         "f1": f1,
         "matched": matched,
-        "auc": auc,
+        "nauc": nauc,
+        # Temporary compatibility for callers that predate the explicit nAUC
+        # naming. New experiment outputs use ``nauc`` exclusively.
+        "auc": nauc,
         "effective_event_times_seconds": compute_realtime_event_times(
             events_pred,
             output_ready_times,
         ),
+    }
+
+
+def compute_normalized_curve_area(
+    values: Sequence[float],
+    coordinates: Sequence[float],
+) -> float:
+    """Return trapezoidal curve area normalized by the coordinate span.
+
+    Normalizing by the span keeps a curve whose values lie in ``[0, 1]`` on
+    that same scale. A one-point curve is defined to have the value of its
+    only point.
+    """
+
+    value_array = np.asarray(tuple(values), dtype=float).reshape(-1)
+    coordinate_array = np.asarray(tuple(coordinates), dtype=float).reshape(-1)
+    if not len(value_array):
+        raise ValueError("values and coordinates must contain at least one point")
+    if len(value_array) != len(coordinate_array):
+        raise ValueError("values and coordinates must have the same length")
+    if not np.all(np.isfinite(value_array)):
+        raise ValueError("values must contain only finite numbers")
+    if not np.all(np.isfinite(coordinate_array)):
+        raise ValueError("coordinates must contain only finite numbers")
+    if len(coordinate_array) == 1:
+        return float(value_array[0])
+    if np.any(np.diff(coordinate_array) <= 0.0):
+        raise ValueError("coordinates must be strictly increasing")
+    return float(
+        np.trapz(value_array, coordinate_array)
+        / (coordinate_array[-1] - coordinate_array[0])
+    )
+
+
+def compute_joint_realtime_f1_curve(
+    beat_f1: Sequence[float],
+    downbeat_f1: Sequence[float],
+    tolerances: Sequence[float] = DEFAULT_REALTIME_TOLERANCES_SECONDS,
+) -> Dict[str, Any]:
+    """Join beat/downbeat RT-F1 pointwise, then integrate the joint curve.
+
+    The harmonic mean is applied independently at every tolerance. The joint
+    nAUC is then the normalized area under that joint curve; it is deliberately
+    not the harmonic mean of the separately integrated beat and downbeat
+    nAUCs.
+    """
+
+    beat = np.asarray(tuple(beat_f1), dtype=float).reshape(-1)
+    downbeat = np.asarray(tuple(downbeat_f1), dtype=float).reshape(-1)
+    tolerance_values = np.asarray(tuple(tolerances), dtype=float).reshape(-1)
+    if len(beat) != len(downbeat) or len(beat) != len(tolerance_values):
+        raise ValueError(
+            "beat_f1, downbeat_f1, and tolerances must have the same length"
+        )
+    if not np.all(np.isfinite(beat)) or not np.all(np.isfinite(downbeat)):
+        raise ValueError("RT-F1 curves must contain only finite numbers")
+    if np.any(beat < 0.0) or np.any(downbeat < 0.0):
+        raise ValueError("RT-F1 curves must be non-negative")
+    denominator = beat + downbeat
+    joint = np.divide(
+        2.0 * beat * downbeat,
+        denominator,
+        out=np.zeros_like(denominator),
+        where=denominator != 0.0,
+    )
+    return {
+        "tolerances_seconds": tolerance_values,
+        "f1": joint,
+        "nauc": compute_normalized_curve_area(joint, tolerance_values),
     }
 
 

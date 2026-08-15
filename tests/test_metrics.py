@@ -104,7 +104,7 @@ def test_realtime_f1_penalizes_timestamp_correct_but_late_events() -> None:
     assert realtime["rt_f1"] == pytest.approx(1.0 / 3.0)
 
 
-def test_realtime_f1_curve_uses_agreed_tolerances_and_normalized_auc() -> None:
+def test_realtime_f1_curve_uses_agreed_tolerances_and_nauc() -> None:
     annotated = np.asarray([1.0, 2.0])
     predicted = annotated.copy()
     ready = np.asarray([1.04, 2.12])
@@ -115,11 +115,11 @@ def test_realtime_f1_curve_uses_agreed_tolerances_and_normalized_auc() -> None:
         [0.03, 0.05, 0.07, 0.10, 0.15]
     )
     assert curve["f1"] == pytest.approx([0.0, 0.5, 0.5, 0.5, 1.0])
-    expected_auc = np.trapz(
+    expected_nauc = np.trapz(
         [0.0, 0.5, 0.5, 0.5, 1.0],
         [0.03, 0.05, 0.07, 0.10, 0.15],
     ) / 0.12
-    assert curve["auc"] == pytest.approx(expected_auc)
+    assert curve["nauc"] == pytest.approx(expected_nauc)
 
 
 def test_realtime_metrics_reject_misaligned_event_availability() -> None:
