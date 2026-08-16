@@ -33,6 +33,20 @@ import mir_eval
 
 DEFAULT_REALTIME_TOLERANCES_SECONDS = (0.03, 0.05, 0.07, 0.10, 0.15)
 
+# Conventional beat-metric settings. These values match mir_eval 0.8.2's
+# public defaults. Keeping them explicit makes the experiment contract visible
+# and lets tests detect upstream default changes instead of silently adopting
+# them.
+DEFAULT_F1_TOLERANCE_SECONDS = 0.07
+DEFAULT_CEMGIL_SIGMA_SECONDS = 0.04
+DEFAULT_P_SCORE_THRESHOLD = 0.2
+DEFAULT_GOTO_THRESHOLD = 0.35
+DEFAULT_GOTO_MU = 0.2
+DEFAULT_GOTO_SIGMA = 0.2
+DEFAULT_CONTINUITY_PHASE_THRESHOLD = 0.175
+DEFAULT_CONTINUITY_PERIOD_THRESHOLD = 0.175
+DEFAULT_INFORMATION_GAIN_BINS = 41
+
 
 # =============================================================================
 # Inter-Beat Interval (IBI) Statistics
@@ -490,7 +504,16 @@ def compute_event_timing_error_stats(
 def compute_beat_metrics(
     beats_pred: np.ndarray,
     beats_ann: np.ndarray,
-    tolerance: float = 0.07,
+    *,
+    f1_tolerance: float = DEFAULT_F1_TOLERANCE_SECONDS,
+    cemgil_sigma: float = DEFAULT_CEMGIL_SIGMA_SECONDS,
+    p_score_threshold: float = DEFAULT_P_SCORE_THRESHOLD,
+    goto_threshold: float = DEFAULT_GOTO_THRESHOLD,
+    goto_mu: float = DEFAULT_GOTO_MU,
+    goto_sigma: float = DEFAULT_GOTO_SIGMA,
+    continuity_phase_threshold: float = DEFAULT_CONTINUITY_PHASE_THRESHOLD,
+    continuity_period_threshold: float = DEFAULT_CONTINUITY_PERIOD_THRESHOLD,
+    information_gain_bins: int = DEFAULT_INFORMATION_GAIN_BINS,
 ) -> Dict[str, float]:
     """
     Compute all beat tracking metrics for a single track.
@@ -506,7 +529,23 @@ def compute_beat_metrics(
     Args:
         beats_pred: Predicted beat times in seconds
         beats_ann: Annotated beat times in seconds
-        tolerance: Tolerance window in seconds (default 70ms per literature)
+        f1_tolerance: F1 matching window in seconds. This also defines the
+            matching window for the timing-error diagnostics.
+        cemgil_sigma: Standard deviation, in seconds, of Cemgil's Gaussian
+            timing kernel.
+        p_score_threshold: P-score window as a fraction of the reference
+            inter-beat interval.
+        goto_threshold: Minimum fraction of correct beats required by Goto's
+            continuity test.
+        goto_mu: Maximum mean relative timing error accepted by Goto.
+        goto_sigma: Maximum standard deviation of relative timing error
+            accepted by Goto.
+        continuity_phase_threshold: Maximum relative phase error used by the
+            continuity metrics.
+        continuity_period_threshold: Maximum relative period error used by the
+            continuity metrics.
+        information_gain_bins: Number of bins in the information-gain error
+            histogram.
 
     Returns:
         Dictionary with all computed metrics
@@ -519,7 +558,7 @@ def compute_beat_metrics(
         compute_event_timing_error_stats(
             beats_pred,
             beats_ann,
-            tolerance=tolerance,
+            tolerance=f1_tolerance,
         )
     )
 
@@ -547,29 +586,36 @@ def compute_beat_metrics(
 
     # F-measure
     metrics["fmeasure"] = mir_eval.beat.f_measure(
-        beats_ann, beats_pred, f_measure_threshold=tolerance
+        beats_ann, beats_pred, f_measure_threshold=f1_tolerance
     )
 
     # Cemgil score (returns tuple of (score, score_with_max_time), we want first)
     cemgil_result = mir_eval.beat.cemgil(
-        beats_ann, beats_pred, cemgil_sigma=tolerance
+        beats_ann, beats_pred, cemgil_sigma=cemgil_sigma
     )
     metrics["cemgil"] = cemgil_result[0] if isinstance(cemgil_result, tuple) else cemgil_result
 
     # P-score
     metrics["pscore"] = mir_eval.beat.p_score(
-        beats_ann, beats_pred, p_score_threshold=tolerance
+        beats_ann, beats_pred, p_score_threshold=p_score_threshold
     )
 
     # Goto accuracy
     metrics["goto"] = mir_eval.beat.goto(
-        beats_ann, beats_pred, goto_threshold=tolerance, goto_mu=0.2, goto_sigma=0.2
+        beats_ann,
+        beats_pred,
+        goto_threshold=goto_threshold,
+        goto_mu=goto_mu,
+        goto_sigma=goto_sigma,
     )
 
     # Continuity-based metrics (CMLc, CMLt, AMLc, AMLt)
     # These are key metrics from Rapini & Jordanous (2024)
     cmlc, cmlt, amlc, amlt = mir_eval.beat.continuity(
-        beats_ann, beats_pred, continuity_phase_threshold=0.175
+        beats_ann,
+        beats_pred,
+        continuity_phase_threshold=continuity_phase_threshold,
+        continuity_period_threshold=continuity_period_threshold,
     )
     metrics["cmlc"] = cmlc
     metrics["cmlt"] = cmlt
@@ -578,7 +624,7 @@ def compute_beat_metrics(
 
     # Information gain
     metrics["information_gain"] = mir_eval.beat.information_gain(
-        beats_ann, beats_pred
+        beats_ann, beats_pred, bins=information_gain_bins
     )
 
     # Count statistics
@@ -596,7 +642,16 @@ def compute_beat_metrics(
 def compute_downbeat_metrics(
     downbeats_pred: np.ndarray,
     downbeats_ann: np.ndarray,
-    tolerance: float = 0.07,
+    *,
+    f1_tolerance: float = DEFAULT_F1_TOLERANCE_SECONDS,
+    cemgil_sigma: float = DEFAULT_CEMGIL_SIGMA_SECONDS,
+    p_score_threshold: float = DEFAULT_P_SCORE_THRESHOLD,
+    goto_threshold: float = DEFAULT_GOTO_THRESHOLD,
+    goto_mu: float = DEFAULT_GOTO_MU,
+    goto_sigma: float = DEFAULT_GOTO_SIGMA,
+    continuity_phase_threshold: float = DEFAULT_CONTINUITY_PHASE_THRESHOLD,
+    continuity_period_threshold: float = DEFAULT_CONTINUITY_PERIOD_THRESHOLD,
+    information_gain_bins: int = DEFAULT_INFORMATION_GAIN_BINS,
 ) -> Dict[str, float]:
     """
     Compute downbeat tracking metrics for a single track.
@@ -606,12 +661,32 @@ def compute_downbeat_metrics(
     Args:
         downbeats_pred: Predicted downbeat times in seconds
         downbeats_ann: Annotated downbeat times in seconds
-        tolerance: Tolerance window in seconds
+        f1_tolerance: F1 and timing-error matching window in seconds.
+        cemgil_sigma: Cemgil Gaussian-kernel standard deviation in seconds.
+        p_score_threshold: P-score window as a fraction of the reference IBI.
+        goto_threshold: Minimum correct-beat fraction for Goto.
+        goto_mu: Maximum mean relative timing error for Goto.
+        goto_sigma: Maximum relative timing-error deviation for Goto.
+        continuity_phase_threshold: Relative phase-error threshold.
+        continuity_period_threshold: Relative period-error threshold.
+        information_gain_bins: Information-gain histogram bin count.
 
     Returns:
         Dictionary with metrics (prefixed with 'db_')
     """
-    base_metrics = compute_beat_metrics(downbeats_pred, downbeats_ann, tolerance)
+    base_metrics = compute_beat_metrics(
+        downbeats_pred,
+        downbeats_ann,
+        f1_tolerance=f1_tolerance,
+        cemgil_sigma=cemgil_sigma,
+        p_score_threshold=p_score_threshold,
+        goto_threshold=goto_threshold,
+        goto_mu=goto_mu,
+        goto_sigma=goto_sigma,
+        continuity_phase_threshold=continuity_phase_threshold,
+        continuity_period_threshold=continuity_period_threshold,
+        information_gain_bins=information_gain_bins,
+    )
     # Add interdownbeat interval stats (idbi prefix, then db_ outer prefix)
     base_metrics.update(compute_ibi_stats(downbeats_pred, "idbi"))
     base_metrics.update(compute_ibi_stats(downbeats_ann,  "idbi_ann"))
@@ -621,7 +696,16 @@ def compute_downbeat_metrics(
 def evaluate_beats(
     predictions: Dict[str, np.ndarray],
     annotations: Dict[str, np.ndarray],
-    tolerance: float = 0.07,
+    *,
+    f1_tolerance: float = DEFAULT_F1_TOLERANCE_SECONDS,
+    cemgil_sigma: float = DEFAULT_CEMGIL_SIGMA_SECONDS,
+    p_score_threshold: float = DEFAULT_P_SCORE_THRESHOLD,
+    goto_threshold: float = DEFAULT_GOTO_THRESHOLD,
+    goto_mu: float = DEFAULT_GOTO_MU,
+    goto_sigma: float = DEFAULT_GOTO_SIGMA,
+    continuity_phase_threshold: float = DEFAULT_CONTINUITY_PHASE_THRESHOLD,
+    continuity_period_threshold: float = DEFAULT_CONTINUITY_PERIOD_THRESHOLD,
+    information_gain_bins: int = DEFAULT_INFORMATION_GAIN_BINS,
 ) -> Dict[str, float]:
     """
     Evaluate beat predictions against annotations for multiple tracks.
@@ -629,7 +713,15 @@ def evaluate_beats(
     Args:
         predictions: Dict mapping track_id to predicted beat times
         annotations: Dict mapping track_id to annotated beat times
-        tolerance: Tolerance window in seconds
+        f1_tolerance: F1 and timing-error matching window in seconds.
+        cemgil_sigma: Cemgil Gaussian-kernel standard deviation in seconds.
+        p_score_threshold: P-score window as a fraction of the reference IBI.
+        goto_threshold: Minimum correct-beat fraction for Goto.
+        goto_mu: Maximum mean relative timing error for Goto.
+        goto_sigma: Maximum relative timing-error deviation for Goto.
+        continuity_phase_threshold: Relative phase-error threshold.
+        continuity_period_threshold: Relative period-error threshold.
+        information_gain_bins: Information-gain histogram bin count.
 
     Returns:
         Dictionary with mean/std of evaluation metrics
@@ -643,7 +735,19 @@ def evaluate_beats(
         pred = predictions[track_id]
         ann = annotations[track_id]
 
-        track_metrics = compute_beat_metrics(pred, ann, tolerance)
+        track_metrics = compute_beat_metrics(
+            pred,
+            ann,
+            f1_tolerance=f1_tolerance,
+            cemgil_sigma=cemgil_sigma,
+            p_score_threshold=p_score_threshold,
+            goto_threshold=goto_threshold,
+            goto_mu=goto_mu,
+            goto_sigma=goto_sigma,
+            continuity_phase_threshold=continuity_phase_threshold,
+            continuity_period_threshold=continuity_period_threshold,
+            information_gain_bins=information_gain_bins,
+        )
         for key, value in track_metrics.items():
             if key not in ["num_pred", "num_ann"]:
                 all_metrics[key].append(value)
@@ -661,7 +765,16 @@ def evaluate_beats(
 def evaluate_downbeats(
     predictions: Dict[str, np.ndarray],
     annotations: Dict[str, np.ndarray],
-    tolerance: float = 0.07,
+    *,
+    f1_tolerance: float = DEFAULT_F1_TOLERANCE_SECONDS,
+    cemgil_sigma: float = DEFAULT_CEMGIL_SIGMA_SECONDS,
+    p_score_threshold: float = DEFAULT_P_SCORE_THRESHOLD,
+    goto_threshold: float = DEFAULT_GOTO_THRESHOLD,
+    goto_mu: float = DEFAULT_GOTO_MU,
+    goto_sigma: float = DEFAULT_GOTO_SIGMA,
+    continuity_phase_threshold: float = DEFAULT_CONTINUITY_PHASE_THRESHOLD,
+    continuity_period_threshold: float = DEFAULT_CONTINUITY_PERIOD_THRESHOLD,
+    information_gain_bins: int = DEFAULT_INFORMATION_GAIN_BINS,
 ) -> Dict[str, float]:
     """
     Evaluate downbeat predictions against annotations.
@@ -669,13 +782,33 @@ def evaluate_downbeats(
     Args:
         predictions: Dict mapping track_id to predicted downbeat times
         annotations: Dict mapping track_id to annotated downbeat times
-        tolerance: Tolerance window in seconds
+        f1_tolerance: F1 and timing-error matching window in seconds.
+        cemgil_sigma: Cemgil Gaussian-kernel standard deviation in seconds.
+        p_score_threshold: P-score window as a fraction of the reference IBI.
+        goto_threshold: Minimum correct-beat fraction for Goto.
+        goto_mu: Maximum mean relative timing error for Goto.
+        goto_sigma: Maximum relative timing-error deviation for Goto.
+        continuity_phase_threshold: Relative phase-error threshold.
+        continuity_period_threshold: Relative period-error threshold.
+        information_gain_bins: Information-gain histogram bin count.
 
     Returns:
         Dictionary with evaluation metrics
     """
     # Same metrics as beats
-    return evaluate_beats(predictions, annotations, tolerance)
+    return evaluate_beats(
+        predictions,
+        annotations,
+        f1_tolerance=f1_tolerance,
+        cemgil_sigma=cemgil_sigma,
+        p_score_threshold=p_score_threshold,
+        goto_threshold=goto_threshold,
+        goto_mu=goto_mu,
+        goto_sigma=goto_sigma,
+        continuity_phase_threshold=continuity_phase_threshold,
+        continuity_period_threshold=continuity_period_threshold,
+        information_gain_bins=information_gain_bins,
+    )
 
 
 def evaluate_tempo(

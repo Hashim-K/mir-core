@@ -91,7 +91,7 @@ class BeatEvaluator:
         result["metrics"] = compute_beat_metrics(
             result["beats_pred"],
             result["beats_ann"],
-            self.tolerance
+            f1_tolerance=self.tolerance,
         )
 
         # Add downbeat metrics if available
@@ -99,7 +99,7 @@ class BeatEvaluator:
             result["metrics"].update(compute_downbeat_metrics(
                 np.asarray(downbeats_pred),
                 np.asarray(downbeats_ann),
-                self.tolerance
+                f1_tolerance=self.tolerance,
             ))
 
         # Store in appropriate location
