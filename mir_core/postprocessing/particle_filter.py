@@ -23,6 +23,7 @@ from mir_core.beats.schema import (
     to_exclusive_beat_downbeat_activation_data,
 )
 
+
 class BDObservationModel(ObservationModel):
     """
     Observation model for beat and downbeat tracking with particle filtering.
@@ -405,6 +406,55 @@ class ParticleFilterTracker:
             np.arange(0, self.st2.num_states - 1), self.down_particle_size, replace=True
         ))
         self.beat = np.squeeze(self.st.first_states)
+        self._beat_last_mask = np.zeros(self.st.num_states, dtype=bool)
+        self._beat_last_mask[np.asarray(self.st.last_states, dtype=np.int64)] = True
+        down_last_states = np.asarray(self.st2.last_states[0], dtype=np.int64)
+        self._down_last_mask = np.zeros(self.st2.num_states, dtype=bool)
+        self._down_last_mask[down_last_states] = True
+        self._down_last_row = {
+            int(state): index for index, state in enumerate(down_last_states)
+        }
+        transition_to = np.asarray(self.tm[0])
+        transition_from = np.asarray(self.tm[1])
+        transition_probability = np.asarray(self.tm[2])
+        self._beat_transitions = {
+            int(state): (
+                transition_to[transition_from == state],
+                transition_probability[transition_from == state],
+            )
+            for state in np.unique(np.asarray(self.st.last_states, dtype=np.int64))
+        }
+
+    def _beat_particle_weights(self, observation: float) -> np.ndarray:
+        """Evaluate only occupied states instead of the full tempo state space."""
+
+        pointers = np.asarray(self.om.pointers)
+        if pointers.ndim != 2:
+            occupied = pointers[self.particles]
+            weights = np.zeros(len(self.particles), dtype=float)
+            weights[occupied == 2] = observation
+            weights[occupied == 0] = self.background_weight
+            return weights
+        weights = pointers[0, self.particles] * observation
+        weights[weights < 0.005] = self.background_weight
+        return weights
+
+    def _down_particle_weights(self, observations: np.ndarray) -> np.ndarray:
+        """Evaluate downbeat likelihoods only at occupied particle states."""
+
+        pointers = np.asarray(self.om2.pointers)
+        if pointers.ndim != 2:
+            occupied = pointers[self.down_particles]
+            weights = np.zeros(len(self.down_particles), dtype=float)
+            weights[occupied == 2] = observations[1]
+            weights[occupied == 0] = observations[0]
+            return weights
+        weights = (
+            pointers[0, self.down_particles] * observations[1]
+            + pointers[1, self.down_particles] * observations[0]
+        )
+        weights[weights < 0.005] = self.background_weight
+        return weights
 
     def process(
         self,
@@ -463,12 +513,19 @@ class ParticleFilterTracker:
                     self.st.state_intervals[gathering]:
 
                 # downbeat particles motion
-                last1 = self.down_particles[np.in1d(self.down_particles, self.st2.last_states)]
-                state1 = self.down_particles[~np.in1d(self.down_particles, self.st2.last_states)] + 1
-                for j in range(len(last1)):
-                    arg1 = np.argwhere(self.st2.last_states[0] == last1[j])[0][0]
-                    nn = np.random.choice(self.st2.first_states[0], 1, p=(np.squeeze(self.tm2[arg1])))
-                    state1 = np.append(state1, nn)
+                down_last = self._down_last_mask[self.down_particles]
+                last1 = self.down_particles[down_last]
+                state1 = self.down_particles[~down_last] + 1
+                transitioned = np.empty(len(last1), dtype=self.down_particles.dtype)
+                for j, state in enumerate(last1):
+                    arg1 = self._down_last_row[int(state)]
+                    transitioned[j] = np.random.choice(
+                        self.st2.first_states[0],
+                        1,
+                        p=np.squeeze(self.tm2[arg1]),
+                    )[0]
+                if len(transitioned):
+                    state1 = np.concatenate((state1, transitioned))
                 self.down_particles = state1
 
                 # downbeat particles correction
@@ -477,13 +534,13 @@ class ParticleFilterTracker:
                     injected = np.concatenate(self.st2.first_states).reshape(-1)
                     injected_downbeat_count = len(injected)
                     self.down_particles = np.append(self.down_particles, injected)
-                obs2 = _down_densities(
-                    both_activations[i],
-                    self.om2,
-                    self.st2,
-                    self.background_weight,
+                down_weights = self._down_particle_weights(
+                    both_activations[i]
                 )
-                self.down_particles = _universal_resample(self.down_particles, obs2[self.down_particles])
+                self.down_particles = _universal_resample(
+                    self.down_particles,
+                    down_weights,
+                )
                 if injected_downbeat_count:
                     # np.delete is not in-place.  Assign its result and remove
                     # the actual number injected so the population stays fixed.
@@ -507,21 +564,24 @@ class ParticleFilterTracker:
                         self.beat_callback(False)
 
             # beat particles motion
-            last = self.particles[np.in1d(self.particles, self.st.last_states)]
-            state = self.particles[~np.in1d(self.particles, self.st.last_states)] + 1
-            for j in range(len(last)):
-                args = np.argwhere(self.tm[1] == last[j])
-                probs = self.tm[2][args]
-                nn = np.random.choice(np.squeeze(self.tm[0][args]), 1, p=(np.squeeze(probs)))
-                state = np.append(state, nn)
+            beat_last = self._beat_last_mask[self.particles]
+            last = self.particles[beat_last]
+            state = self.particles[~beat_last] + 1
+            transitioned = np.empty(len(last), dtype=self.particles.dtype)
+            for j, last_state in enumerate(last):
+                choices, probabilities = self._beat_transitions[int(last_state)]
+                transitioned[j] = np.random.choice(
+                    np.squeeze(choices),
+                    1,
+                    p=np.squeeze(probabilities),
+                )[0]
+            if len(transitioned):
+                state = np.concatenate((state, transitioned))
             self.particles = state
 
             # beat particles correction
-            obs = _beat_densities(
-                combined_activations[i],
-                self.om,
-                self.st,
-                self.background_weight,
+            beat_weights = self._beat_particle_weights(
+                combined_activations[i]
             )
             if combined_activations[i] > self.resampling_threshold:
                 injected_beat_count = 0
@@ -537,7 +597,10 @@ class ParticleFilterTracker:
                     ).reshape(-1)
                     injected_beat_count = len(injected)
                     self.particles = np.append(self.particles, injected)
-                self.particles = _universal_resample(self.particles, obs[self.particles])  # beat correction
+                self.particles = _universal_resample(
+                    self.particles,
+                    beat_weights,
+                )  # beat correction
                 if injected_beat_count:
                     # BeatNet discarded np.delete's return value and used the
                     # first-state container length rather than the injected count.

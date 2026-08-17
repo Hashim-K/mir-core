@@ -9,6 +9,42 @@ from mir_core.beats.schema import (
     ExclusiveBeatDownbeatChannel,
 )
 from mir_core.postprocessing import ParticleFilterTracker
+from mir_core.postprocessing.particle_filter import (
+    _beat_densities,
+    _down_densities,
+)
+
+
+def test_sparse_particle_likelihoods_match_full_state_densities() -> None:
+    tracker = ParticleFilterTracker(
+        particle_size=100,
+        down_particle_size=20,
+        num_tempi=30,
+    )
+    observation = 0.73
+    down_observations = np.asarray([0.42, 0.31])
+
+    beat_full = _beat_densities(
+        observation,
+        tracker.om,
+        tracker.st,
+        tracker.background_weight,
+    )
+    down_full = _down_densities(
+        down_observations,
+        tracker.om2,
+        tracker.st2,
+        tracker.background_weight,
+    )
+
+    np.testing.assert_array_equal(
+        tracker._beat_particle_weights(observation),
+        beat_full[tracker.particles],
+    )
+    np.testing.assert_array_equal(
+        tracker._down_particle_weights(down_observations),
+        down_full[tracker.down_particles],
+    )
 
 
 def test_particle_filter_accepts_two_channel_activations_at_fractional_fps() -> None:
