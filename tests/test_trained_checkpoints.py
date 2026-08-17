@@ -122,6 +122,12 @@ def test_stock_postprocessor_file_contains_only_online_choices() -> None:
     assert next(choice for choice in choices if choice["id"] == "stock-dbn")[
         "online"
     ] is True
+    stock_1d = next(choice for choice in choices if choice["id"] == "stock-1d")
+    assert stock_1d["mode"] == "at"
+    assert stock_1d["1d_ss_type"] == "1d-ss-at"
+    assert stock_1d["offset"] == pytest.approx(0.0)
+    assert stock_1d["event_activation_threshold"] == pytest.approx(0.5)
+    assert stock_1d["downbeat_activation_threshold"] == pytest.approx(0.4)
 
     bundle = load_trained_model_bundle("beatnet", "latin_general", "scratch")
     by_id = {choice["id"]: choice for choice in choices}

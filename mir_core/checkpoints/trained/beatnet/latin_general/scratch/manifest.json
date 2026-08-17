@@ -79,8 +79,8 @@
       "method": "heydari_1d_state_space",
       "path": "postprocessors/stock-1d/params.json",
       "selection_split": null,
-      "sha256": "7f323eddca555a774ce68d52a89d90d6b6e680b7c4f5d2fa8592b441db825685",
-      "size_bytes": 458,
+      "sha256": "9f61018d0f21939b12c22055b177ee44920727d6df8b8b1d60df8e91a44d1001",
+      "size_bytes": 644,
       "source": {
         "attempt_id": "beat-final-online-v3-20260811T1715Z-latin-general",
         "catalog": "beatnet/stock/baseline/postprocessors.json",
@@ -132,8 +132,8 @@
       "path": "postprocessors/tuned-1d/params.json",
       "selection_hash": "sel-097aefe3da81",
       "selection_split": "validation",
-      "sha256": "fe453d65e15a1c0736308143820eec5bd88d4d040df9a07b309b04d99ee45d33",
-      "size_bytes": 615,
+      "sha256": "434792398878f37beaf2444018017d673ec1d1daf68d2c19cc7227ad11e6d673",
+      "size_bytes": 611,
       "source_id": "1d-causal-activation-v2-hybrid-joint",
       "source_manifest": {
         "path": "postprocessors/tuned-1d/source-manifest.json",

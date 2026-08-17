@@ -17,6 +17,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from mir_core.postprocessing.state_space_1d import (
+    normalize_state_space_1d_mode,
+    state_space_1d_type,
+)
+
 
 TRAINED_MODEL_BUNDLE_SCHEMA = "mir.trained-model-bundle/v2"
 TRAINED_MODELS_ROOT = Path(__file__).with_name("trained")
@@ -161,13 +166,18 @@ def _validate_causal_postprocessor(
         mode = str(parameters.get("peak_snap_mode", "center")).lower()
         if window > 0 and mode not in {"past", "causal"}:
             raise ValueError(f"{name} uses future-looking 1D peak snapping.")
-        trigger = str(parameters.get("event_trigger_mode", "state_boundary")).lower()
-        if trigger in {
-            "activation",
-            "threshold",
-            "threshold_crossing",
-            "activation_threshold",
-        } and window:
+        mode = normalize_state_space_1d_mode(
+            parameters.get(
+                "mode",
+                parameters.get("event_trigger_mode", "at"),
+            )
+        )
+        declared_type = parameters.get("1d_ss_type")
+        if declared_type is not None and str(declared_type) != state_space_1d_type(mode):
+            raise ValueError(
+                f"{name} 1d_ss_type does not match its configured mode."
+            )
+        if mode == "at" and window:
             raise ValueError(
                 f"{name} uses immediate activation with retrospective snapping."
             )

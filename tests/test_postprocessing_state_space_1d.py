@@ -12,7 +12,11 @@ from mir_core.beats.schema import (
     to_exclusive_beat_downbeat_activation_data,
 )
 from mir_core.evaluation.metrics import compute_beat_metrics
-from mir_core.postprocessing.state_space_1d import Heydari1DStateSpaceTracker
+from mir_core.postprocessing.state_space_1d import (
+    Heydari1DStateSpaceTracker,
+    normalize_state_space_1d_mode,
+    state_space_1d_type,
+)
 
 
 def _decoder_activations(values: np.ndarray) -> ExclusiveBeatDownbeatActivations:
@@ -45,6 +49,7 @@ def _collision_regression_activations() -> ExclusiveBeatDownbeatActivations:
 
 def _selected_sweep_candidate_params(*, peak_snap_mode: str) -> dict[str, object]:
     return {
+        "mode": "sb",
         "fps": 50,
         "min_bpm": 80,
         "max_bpm": 240,
@@ -80,6 +85,45 @@ def test_heydari_1d_state_space_tracker_returns_event_rows() -> None:
     assert set(np.unique(decoded[:, 1])).issubset({1.0, 2.0})
 
 
+def test_heydari_1d_defaults_to_untuned_activation_triggered_mode() -> None:
+    tracker = Heydari1DStateSpaceTracker()
+
+    assert tracker.mode == "at"
+    assert tracker.event_trigger_mode == "activation_threshold"
+    assert tracker.offset == pytest.approx(0.0)
+    assert tracker.beat_jump_threshold == pytest.approx(0.7)
+    assert state_space_1d_type(tracker.mode) == "1d-ss-at"
+
+
+def test_heydari_1d_state_boundary_mode_uses_repaired_transition_default() -> None:
+    tracker = Heydari1DStateSpaceTracker(mode="sb")
+
+    assert tracker.mode == "sb"
+    assert tracker.event_trigger_mode == "state_boundary"
+    assert tracker.offset == pytest.approx(4.0)
+    assert tracker.beat_jump_threshold == pytest.approx(0.0)
+    assert state_space_1d_type(tracker.mode) == "1d-ss-sb"
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("activation_threshold", "at"),
+        ("1d-ss-at", "at"),
+        ("state_boundary", "sb"),
+        ("1d-ss-sb", "sb"),
+    ],
+)
+def test_heydari_1d_mode_aliases(alias: str, expected: str) -> None:
+    assert normalize_state_space_1d_mode(alias) == expected
+
+
+def test_heydari_1d_legacy_event_trigger_mode_remains_supported() -> None:
+    tracker = Heydari1DStateSpaceTracker(event_trigger_mode="state_boundary")
+
+    assert tracker.mode == "sb"
+
+
 def test_heydari_1d_state_space_tracker_handles_short_tracks() -> None:
     activations = np.zeros((10, 2), dtype=np.float32)
 
@@ -106,6 +150,72 @@ def test_heydari_1d_rejects_invalid_jump_reward_lambda(
         Heydari1DStateSpaceTracker(**{parameter: value})
 
 
+@pytest.mark.parametrize(
+    "value",
+    [1.01, -0.01, float("nan"), float("inf"), float("-inf")],
+)
+def test_heydari_1d_rejects_invalid_beat_jump_threshold(value: float) -> None:
+    with pytest.raises(
+        ValueError,
+        match="beat_jump_threshold must be finite and in",
+    ):
+        Heydari1DStateSpaceTracker(beat_jump_threshold=value)
+
+
+def test_heydari_1d_lower_beat_jump_threshold_admits_weaker_tempo_jump() -> None:
+    trackers = {
+        "reference": Heydari1DStateSpaceTracker(
+            fps=50,
+            min_bpm=60,
+            max_bpm=300,
+            offset=0.0,
+        ),
+        "lowered": Heydari1DStateSpaceTracker(
+            fps=50,
+            min_bpm=60,
+            max_bpm=300,
+            offset=0.0,
+            beat_jump_threshold=0.1,
+        ),
+    }
+    for tracker in trackers.values():
+        tracker.st.jump_weights.fill(0.2)
+        tracker._beat_distribution.fill(0.0)
+        tracker._beat_distribution[tracker.st.min_interval] = 1.0
+        tracker.process_frame(
+            _decoder_activations(np.asarray([[0.0, 0.0]], dtype=np.float32))
+        )
+
+    assert (
+        trackers["reference"].beat_jump_threshold
+        == Heydari1DStateSpaceTracker.BEAT_JUMP_THRESHOLD
+        == 0.7
+    )
+    assert trackers["reference"]._beat_distribution[0] == pytest.approx(0.0)
+    assert trackers["lowered"]._beat_distribution[0] == pytest.approx(0.2)
+
+
+def test_heydari_1d_zero_beat_jump_threshold_clips_negative_weights() -> None:
+    tracker = Heydari1DStateSpaceTracker(
+        fps=50,
+        min_bpm=60,
+        max_bpm=300,
+        offset=0.0,
+        beat_jump_threshold=0.0,
+    )
+    tracker.st.jump_weights.fill(-0.2)
+    tracker.st.jump_weights[tracker.st.min_interval] = 0.2
+    tracker._beat_distribution.fill(0.0)
+    tracker._beat_distribution[tracker.st.min_interval] = 1.0
+
+    tracker.process_frame(
+        _decoder_activations(np.asarray([[0.0, 0.0]], dtype=np.float32))
+    )
+
+    assert tracker._beat_distribution[0] == pytest.approx(0.2)
+    assert np.all(tracker._beat_distribution >= 0.0)
+
+
 def test_heydari_1d_state_space_tracker_supports_peak_snap_options() -> None:
     fps = 50
     activations = np.zeros((500, 2), dtype=np.float32)
@@ -114,6 +224,7 @@ def test_heydari_1d_state_space_tracker_supports_peak_snap_options() -> None:
         activations[frame, 1] = 0.9 if index % 4 == 0 else 0.05
 
     decoded = Heydari1DStateSpaceTracker(
+        mode="sb",
         fps=fps,
         min_bpm=120,
         max_bpm=260,
@@ -137,6 +248,7 @@ def test_heydari_1d_reports_emission_frames_and_frame_costs() -> None:
         activations[frame, 0] = 0.95
 
     tracker = Heydari1DStateSpaceTracker(
+        mode="sb",
         fps=fps,
         peak_snap_window_frames=4,
         peak_snap_mode="future",
@@ -239,11 +351,13 @@ def test_heydari_1d_process_frame_matches_causal_batch_decode() -> None:
     tagged = _decoder_activations(activations)
 
     batch = Heydari1DStateSpaceTracker(
+        mode="sb",
         fps=fps,
         peak_snap_window_frames=4,
         peak_snap_mode="past",
     ).process(tagged)
     tracker = Heydari1DStateSpaceTracker(
+        mode="sb",
         fps=fps,
         peak_snap_window_frames=4,
         peak_snap_mode="past",
@@ -287,7 +401,7 @@ def test_heydari_1d_activation_trigger_emits_at_current_frame() -> None:
         offset=0.0,
         min_bpm=60.0,
         max_bpm=300.0,
-        event_trigger_mode="activation_threshold",
+        mode="at",
         event_activation_threshold=0.5,
         downbeat_activation_threshold=0.4,
         min_separation_fraction=0.5,
@@ -309,7 +423,7 @@ def test_heydari_1d_activation_trigger_has_exact_frame_replay() -> None:
     params = {
         "fps": 50,
         "offset": 0.0,
-        "event_trigger_mode": "activation_threshold",
+        "mode": "at",
         "event_activation_threshold": 0.5,
     }
 
@@ -332,7 +446,7 @@ def test_heydari_1d_activation_trigger_has_exact_frame_replay() -> None:
 def test_heydari_1d_activation_trigger_rejects_retrospective_snap() -> None:
     with pytest.raises(ValueError, match="cannot use retrospective peak snapping"):
         Heydari1DStateSpaceTracker(
-            event_trigger_mode="activation_threshold",
+            mode="at",
             peak_snap_window_frames=1,
             peak_snap_mode="past",
         )
@@ -340,6 +454,7 @@ def test_heydari_1d_activation_trigger_rejects_retrospective_snap() -> None:
 
 def test_heydari_1d_process_frame_rejects_future_peak_snap() -> None:
     tracker = Heydari1DStateSpaceTracker(
+        mode="sb",
         peak_snap_window_frames=2,
         peak_snap_mode="future",
     )

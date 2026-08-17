@@ -19,6 +19,51 @@ from mir_core.beats.schema import (
 )
 
 
+STATE_SPACE_1D_AT_MODE = "at"
+STATE_SPACE_1D_SB_MODE = "sb"
+STATE_SPACE_1D_AT_TYPE = "1d-ss-at"
+STATE_SPACE_1D_SB_TYPE = "1d-ss-sb"
+
+_STATE_SPACE_1D_MODE_ALIASES = {
+    "at": STATE_SPACE_1D_AT_MODE,
+    "activation": STATE_SPACE_1D_AT_MODE,
+    "activation_threshold": STATE_SPACE_1D_AT_MODE,
+    "threshold": STATE_SPACE_1D_AT_MODE,
+    "threshold_crossing": STATE_SPACE_1D_AT_MODE,
+    "1d-ss-at": STATE_SPACE_1D_AT_MODE,
+    "1d_ss_at": STATE_SPACE_1D_AT_MODE,
+    "sb": STATE_SPACE_1D_SB_MODE,
+    "state": STATE_SPACE_1D_SB_MODE,
+    "boundary": STATE_SPACE_1D_SB_MODE,
+    "state_boundary": STATE_SPACE_1D_SB_MODE,
+    "1d-ss-sb": STATE_SPACE_1D_SB_MODE,
+    "1d_ss_sb": STATE_SPACE_1D_SB_MODE,
+}
+
+
+def normalize_state_space_1d_mode(value: object = STATE_SPACE_1D_AT_MODE) -> str:
+    """Return the canonical ``at`` or ``sb`` 1D-SS mode identifier."""
+
+    token = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    try:
+        return _STATE_SPACE_1D_MODE_ALIASES[token]
+    except KeyError as exc:
+        raise ValueError(
+            "mode must be 'at' (activation-triggered) or 'sb' "
+            "(state-boundary)."
+        ) from exc
+
+
+def state_space_1d_type(value: object = STATE_SPACE_1D_AT_MODE) -> str:
+    """Return the stable experiment label for a 1D-SS mode."""
+
+    return (
+        STATE_SPACE_1D_AT_TYPE
+        if normalize_state_space_1d_mode(value) == STATE_SPACE_1D_AT_MODE
+        else STATE_SPACE_1D_SB_TYPE
+    )
+
+
 @dataclass
 class StateSpace1D:
     """Compact one-dimensional state space for one rhythmic hierarchy."""
@@ -155,21 +200,33 @@ class Heydari1DStateSpaceTracker:
     ``(time_seconds, label, local_tempo_bpm, local_meter)``, where label ``1``
     marks downbeats and label ``2`` marks non-downbeat beats.
 
-    ``state_boundary`` preserves the reference event decision. For live
-    actuation, ``activation_threshold`` emits on the current all-beat
-    activation crossing while retaining the state-space tempo and meter
-    estimates. The latter never backdates an event or waits for a later peak.
+    ``mode="sb"`` uses the inferred state boundary as the event decision.
+    ``mode="at"`` (the default) emits on the current all-beat activation
+    crossing while retaining the state-space tempo and meter estimates. AT
+    never backdates an event or waits for a later peak.
+
+    ``beat_jump_threshold`` exposes the reference implementation's fixed
+    ``0.7`` gate on learned beat/tempo jump weights. AT retains that reference
+    value by default. The repaired SB mode defaults to ``0`` so all positive
+    learned jump mass can reset the state; negative weights are still removed
+    because they cannot represent transition probabilities. Supplying an
+    explicit value reproduces or tunes either transition rule.
     """
 
     MIN_BPM = 55.0
     MAX_BPM = 215.0
     LAMBDA_B = 0.01
     LAMBDA_D = 0.01
+    REFERENCE_BEAT_JUMP_THRESHOLD = 0.7
+    SB_BEAT_JUMP_THRESHOLD = 0.0
+    BEAT_JUMP_THRESHOLD = REFERENCE_BEAT_JUMP_THRESHOLD
     OBSERVATION_LAMBDA = "B56"
     DOWNBEAT_OBSERVATION_LAMBDA = "B60"
     MIN_BEATS_PER_BAR = 1
     MAX_BEATS_PER_BAR = 4
-    OFFSET = 4.0
+    AT_OFFSET = 0.0
+    SB_OFFSET = 4.0
+    OFFSET = AT_OFFSET
     IG_THRESHOLD = 0.4
     EVENT_ACTIVATION_THRESHOLD = 0.5
     DOWNBEAT_ACTIVATION_THRESHOLD = 0.4
@@ -186,13 +243,15 @@ class Heydari1DStateSpaceTracker:
         max_beats_per_bar: int = MAX_BEATS_PER_BAR,
         lambda_b: float = LAMBDA_B,
         lambda_d: float = LAMBDA_D,
+        beat_jump_threshold: float | None = None,
         observation_lambda: str = OBSERVATION_LAMBDA,
         downbeat_observation_lambda: str = DOWNBEAT_OBSERVATION_LAMBDA,
-        offset: float = OFFSET,
+        offset: float | None = None,
         ig_threshold: float = IG_THRESHOLD,
         min_separation_mode: str = "min_interval",
         min_separation_fraction: float = MIN_SEPARATION_FRACTION,
-        event_trigger_mode: str = "state_boundary",
+        mode: str = STATE_SPACE_1D_AT_MODE,
+        event_trigger_mode: str | None = None,
         event_activation_threshold: float = EVENT_ACTIVATION_THRESHOLD,
         downbeat_activation_threshold: float = DOWNBEAT_ACTIVATION_THRESHOLD,
         peak_snap_window_frames: int = 0,
@@ -211,7 +270,26 @@ class Heydari1DStateSpaceTracker:
         self.min_bpm = float(min_bpm)
         self.max_bpm = float(max_bpm)
         self.beats_per_bar = list(beats_per_bar or [])
-        self.offset = float(offset)
+        # ``event_trigger_mode`` is the pre-mode API.  It remains a supported
+        # compatibility alias, but new configs should persist only ``mode``.
+        selected_mode = normalize_state_space_1d_mode(
+            event_trigger_mode if event_trigger_mode is not None else mode
+        )
+        self.mode = selected_mode
+        self.event_trigger_mode = (
+            "activation_threshold"
+            if selected_mode == STATE_SPACE_1D_AT_MODE
+            else "state_boundary"
+        )
+        self.offset = float(
+            (
+                self.AT_OFFSET
+                if selected_mode == STATE_SPACE_1D_AT_MODE
+                else self.SB_OFFSET
+            )
+            if offset is None
+            else offset
+        )
         self.ig_threshold = float(ig_threshold)
         self.min_separation_mode = str(min_separation_mode).lower()
         if self.min_separation_mode in {"min", "fixed"}:
@@ -219,15 +297,15 @@ class Heydari1DStateSpaceTracker:
         elif self.min_separation_mode in {"local", "tempo", "estimated"}:
             self.min_separation_mode = "local_tempo"
         self.min_separation_fraction = float(min_separation_fraction)
-        self.event_trigger_mode = str(event_trigger_mode).strip().lower()
-        if self.event_trigger_mode in {"state", "boundary"}:
-            self.event_trigger_mode = "state_boundary"
-        elif self.event_trigger_mode in {
-            "activation",
-            "threshold",
-            "threshold_crossing",
-        }:
-            self.event_trigger_mode = "activation_threshold"
+        self.beat_jump_threshold = float(
+            (
+                self.REFERENCE_BEAT_JUMP_THRESHOLD
+                if selected_mode == STATE_SPACE_1D_AT_MODE
+                else self.SB_BEAT_JUMP_THRESHOLD
+            )
+            if beat_jump_threshold is None
+            else beat_jump_threshold
+        )
         self.event_activation_threshold = float(event_activation_threshold)
         self.downbeat_activation_threshold = float(downbeat_activation_threshold)
         self.peak_snap_window_frames = int(peak_snap_window_frames)
@@ -245,14 +323,10 @@ class Heydari1DStateSpaceTracker:
             0.0 < self.min_separation_fraction <= 1.0
         ):
             raise ValueError("min_separation_fraction must be in (0, 1].")
-        if self.event_trigger_mode not in {
-            "state_boundary",
-            "activation_threshold",
-        }:
-            raise ValueError(
-                "event_trigger_mode must be 'state_boundary' or "
-                "'activation_threshold'."
-            )
+        if not np.isfinite(self.beat_jump_threshold) or not (
+            0.0 <= self.beat_jump_threshold <= 1.0
+        ):
+            raise ValueError("beat_jump_threshold must be finite and in [0, 1].")
         for name, value in (
             ("event_activation_threshold", self.event_activation_threshold),
             ("downbeat_activation_threshold", self.downbeat_activation_threshold),
@@ -427,8 +501,11 @@ class Heydari1DStateSpaceTracker:
             )
         beat_weight = self.st.jump_weights.copy()
         beat_jump_rewards1 = -self._beat_distribution * beat_weight
-        beat_weight[beat_weight < 0.7] = 0
-        jump_back_mass = float(np.sum(self._beat_distribution * beat_weight))
+        beat_weight[beat_weight < self.beat_jump_threshold] = 0
+        # Keep Python's left-to-right summation from the reference package.
+        # The learned weights can be close enough that NumPy's pairwise
+        # reduction changes the reported tempo argmax on some tracks.
+        jump_back_mass = float(sum(self._beat_distribution * beat_weight))
         self._beat_distribution = np.roll(
             self._beat_distribution * (1 - beat_weight),
             1,
@@ -523,7 +600,7 @@ class Heydari1DStateSpaceTracker:
         down_weight = self.st2.jump_weights.copy()
         down_jump_rewards1 = -self._down_distribution * down_weight
         down_weight[down_weight < 0.2] = 0
-        down_jump_back_mass = float(np.sum(self._down_distribution * down_weight))
+        down_jump_back_mass = float(sum(self._down_distribution * down_weight))
         self._down_distribution = np.roll(
             self._down_distribution * (1 - down_weight),
             1,
@@ -671,8 +748,8 @@ class Heydari1DStateSpaceTracker:
                 self.st.jump_weights = 0.7 * self.st.jump_weights / np.max(self.st.jump_weights)
             beat_weight = self.st.jump_weights.copy()
             beat_jump_rewards1 = -beat_distribution * beat_weight
-            beat_weight[beat_weight < 0.7] = 0
-            jump_back_mass = float(np.sum(beat_distribution * beat_weight))
+            beat_weight[beat_weight < self.beat_jump_threshold] = 0
+            jump_back_mass = float(sum(beat_distribution * beat_weight))
             beat_distribution = np.roll(beat_distribution * (1 - beat_weight), 1)
             beat_distribution[0] += jump_back_mass
 
@@ -750,7 +827,7 @@ class Heydari1DStateSpaceTracker:
                 down_weight = self.st2.jump_weights.copy()
                 down_jump_rewards1 = -down_distribution * down_weight
                 down_weight[down_weight < 0.2] = 0
-                down_jump_back_mass = float(np.sum(down_distribution * down_weight))
+                down_jump_back_mass = float(sum(down_distribution * down_weight))
                 down_distribution = np.roll(down_distribution * (1 - down_weight), 1)
                 down_distribution[0] += down_jump_back_mass
 
